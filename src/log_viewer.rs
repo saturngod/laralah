@@ -170,7 +170,7 @@ pub fn log_file_display_name(
     if let Some(cf) = custom_folder
         && let Ok(rel) = path.strip_prefix(cf)
     {
-        let s = rel.to_string_lossy().to_string();
+        let s = relative_display(rel);
         if !s.is_empty() {
             return s;
         }
@@ -178,7 +178,7 @@ pub fn log_file_display_name(
     let root = Path::new(project_path);
     for base in [root.join("storage").join("logs"), root.join("logs"), root.to_path_buf()] {
         if let Ok(rel) = path.strip_prefix(&base) {
-            let s = rel.to_string_lossy().to_string();
+            let s = relative_display(rel);
             if !s.is_empty() {
                 return s;
             }
@@ -188,6 +188,14 @@ pub fn log_file_display_name(
         .and_then(|s| s.to_str())
         .unwrap_or("laravel.log")
         .to_string()
+}
+
+/// Joins path components with `/` so display names are the same on every OS.
+fn relative_display(rel: &Path) -> String {
+    rel.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn collect_logs_recursive(
