@@ -120,6 +120,16 @@ jobs:
             libx11-dev libx11-xcb-dev libxcb1-dev libxi-dev libxrandr-dev \
             libfontconfig-dev libfreetype-dev libasound2-dev libssl-dev libzstd-dev
 
+      # The runner tests execute real PHP against tests/fixtures/sample_app.
+      # Ubuntu and Windows runners ship PHP; macOS runners do not.
+      - name: Install PHP (macOS only)
+        if: runner.os == 'macOS'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: mbstring, pdo_sqlite, sqlite3
+          coverage: none
+
       - name: Test
         run: cargo test --locked
 

@@ -4857,7 +4857,8 @@ impl LaralahApp {
             if self.output_mode == OutputMode::RawCli {
                 "PsySH CLI Output".to_string()
             } else {
-                let val_count = ordered_detail_items(res, false).len();
+                let has_output = !res.raw_output.trim_end_matches(['\r', '\n']).is_empty();
+                let val_count = ordered_detail_items(res, false).len() + usize::from(has_output);
                 let sql_cnt = res.sql_queries.len();
                 if sql_cnt > 0 {
                     format!("{val_count} result(s) · {sql_cnt} SQL")
@@ -4993,6 +4994,10 @@ impl LaralahApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let stream_items = ordered_detail_items(res, self.settings.show_sql_inline);
+        let raw_output = res
+            .raw_output
+            .trim_end_matches(['\r', '\n'])
+            .replace("\r\n", "\n");
 
         div()
             .id("detail-cards-scroll")
@@ -5022,6 +5027,44 @@ impl LaralahApp {
                         .text_xs()
                         .text_color(rgb(TEXT_SECONDARY))
                         .child("No queries were made."),
+                )
+            })
+            // Captured stdout (echo / print / printf ...)
+            .when(!raw_output.is_empty(), |el| {
+                el.child(
+                    div()
+                        .w_full()
+                        .flex_shrink_0()
+                        .overflow_x_hidden()
+                        .bg(rgb(BG_CARD))
+                        .border_1()
+                        .border_color(rgb(BORDER_CARD))
+                        .rounded_lg()
+                        .px_3p5()
+                        .py_2p5()
+                        .flex()
+                        .flex_row()
+                        .items_start()
+                        .justify_between()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .overflow_hidden()
+                                .font_family("Menlo")
+                                .text_xs()
+                                .line_height(px(20.0))
+                                .text_color(rgb(TEXT_MAIN))
+                                .child(raw_output.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_xs()
+                                .text_color(rgb(TEXT_MUTED))
+                                .child("Output"),
+                        ),
                 )
             })
             // Ordered top-to-bottom stream: SQL queries, dump()s, and final return value

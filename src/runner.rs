@@ -1232,13 +1232,13 @@ function __tw_prepare_code(string $code): array {
         $work = $prefixKeepNewlines . substr($work, $tagLen);
     }
     if (trim($work) === '') {
-        return ['', 1];
+        return ['', 1, false];
     }
 
     $tokens = @token_get_all("<?php\n" . $work);
     if (!is_array($tokens) || count($tokens) <= 1) {
         // Syntax error: return $work unmodified so eval() reports the exact ParseError line
-        return [$work, substr_count(rtrim($work), "\n") + 1];
+        return [$work, substr_count(rtrim($work), "\n") + 1, false];
     }
 
     // Split into top-level statements while tracking exact 1-based editor line numbers
@@ -1311,6 +1311,9 @@ function __tw_prepare_code(string $code): array {
     $nonIntermediateRe = '/^(return|echo|print|throw|exit|die|yield|goto|use|namespace|class|abstract|final|readonly|interface|trait|enum|function|if|for|foreach|while|do|switch|try|declare|unset|global|const|include|include_once|require|require_once|dump|dd|var_dump|print_r|__tw_dump|__tw_dd|__tw_expr)\b/i';
 
     $finalReturnLine = substr_count(rtrim($work), "\n") + 1;
+    // True when the final statement only prints (echo/print/...): its "return value" is a
+    // meaningless null, so the caller should show the captured output instead of a null card.
+    $finalIsOutputOnly = false;
 
     if ($lastIdx !== null) {
         // 1. Blank-line block rule: wrap the final expression of each blank-line-separated block
@@ -1351,13 +1354,14 @@ function __tw_prepare_code(string $code): array {
         // 2. Wrap final statement in return ...;
         [$prefixLast, $coreLast, $suffixLast] = __tw_split_stmt_trivia($statements[$lastIdx]);
         $finalReturnLine = (int) ($stmtEndLines[$lastIdx] ?? $finalReturnLine);
+        $finalIsOutputOnly = (bool) preg_match('/^(echo|print|printf|var_dump|print_r)\b/i', $coreLast);
         if ($coreLast !== '' && !preg_match($nonReturnRe, $coreLast)) {
             $hasSemi = str_ends_with($coreLast, ';');
             $statements[$lastIdx] = $prefixLast . 'return ' . $coreLast . ($hasSemi ? '' : ';') . $suffixLast;
         }
     }
 
-    return [implode('', $statements), $finalReturnLine];
+    return [implode('', $statements), $finalReturnLine, $finalIsOutputOnly];
 }
 
 function __tw_split_stmt_trivia(string $stmt): array {
@@ -1598,7 +1602,7 @@ if (class_exists('Illuminate\\Support\\Facades\\DB')) {
     });
 }
 
-[$__tw_prepared, $__tw_final_return_line] = __tw_prepare_code($__tw_user_code);
+[$__tw_prepared, $__tw_final_return_line, $__tw_final_is_output_only] = __tw_prepare_code($__tw_user_code);
 $__tw_status = 'ok';
 $__tw_return_val = null;
 $__tw_has_return = false;
@@ -1658,6 +1662,10 @@ foreach ($__tw_sql_queries as &$qEntry) {
 unset($qEntry);
 
 $__tw_return_card = null;
+if ($__tw_has_return && $__tw_final_is_output_only && $__tw_return_val === null) {
+    // e.g. `echo "..."` as the last line: nothing was returned, the text is in raw_output.
+    $__tw_has_return = false;
+}
 if ($__tw_has_return && !$__tw_dd_triggered && $__tw_exception === null) {
     $__tw_return_card = [
         'id' => __tw_next_id('ret'),
