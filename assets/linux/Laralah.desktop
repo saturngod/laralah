@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Laralah
+GenericName=Laravel REPL & Inspector
+Comment=Laravel Desktop REPL & Inspector
+Exec=Laralah
+Icon=laralah
+Terminal=false
+Categories=Development;IDE;
+StartupWMClass=Laralah
