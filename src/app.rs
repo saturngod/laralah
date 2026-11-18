@@ -2656,6 +2656,8 @@ impl LaralahApp {
                 .flex_row()
                 .items_center()
                 .justify_center()
+                .window_control_area(gpui::WindowControlArea::Drag)
+                .on_mouse_down(gpui::MouseButton::Left, titlebar_double_click)
                 .child(
                     div()
                         .text_xs()
@@ -2837,7 +2839,14 @@ impl LaralahApp {
                     ),
             )
             // Center cluster: Horizontally scrollable Multi-tab Scratchpad strip + pinned `+` & All-Tabs menu
-            .child(div().flex_1().min_w(px(0.0)))
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .min_w(px(0.0))
+                    .window_control_area(gpui::WindowControlArea::Drag)
+                    .on_mouse_down(gpui::MouseButton::Left, titlebar_double_click),
+            )
             // Right cluster: `[ Dive | CLI ]` · SQL · Auto · ▶ Run · AI (single blue accent; amber only for N+1)
             .child(
                 div()
@@ -12770,6 +12779,17 @@ fn csv_escape(cell: &str) -> String {
         format!("\"{}\"", cell.replace('"', "\"\""))
     } else {
         cell.to_string()
+    }
+}
+
+/// Double-clicking empty titlebar space zooms or minimizes the window, following the
+/// macOS "Double-click a window's title bar to" setting. The native handler is disabled
+/// in `macos_window_cursor` so double-clicks on titlebar buttons don't resize the window.
+/// On Windows the same areas are marked `WindowControlArea::Drag`, so the OS handles
+/// drag and double-click maximize/restore itself; Linux uses server-side decorations.
+fn titlebar_double_click(event: &gpui::MouseDownEvent, window: &mut Window, _: &mut App) {
+    if event.click_count == 2 {
+        window.titlebar_double_click();
     }
 }
 
