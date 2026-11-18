@@ -1,0 +1,30 @@
+#!/bin/sh
+# pre-push guard for release tags.
+#
+# Git has no hook that fires when a tag is *created* locally, so release tags
+# are validated here, before they leave the machine: every push of refs/tags/v*
+# is checked against the version files recorded in the tagged commit itself.
+#
+# Install once per clone: git config core.hooksPath githooks
+# Bypass only to delete a bad tag: git push origin :refs/tags/vX.Y.Z
+
+set -u
+
+ZERO="0000000000000000000000000000000000000000"
+failed=0
+root="$(git rev-parse --show-toplevel)" || exit 1
+
+while read -r local_ref local_sha remote_ref _remote_sha; do
+  case "${remote_ref:-}" in
+    refs/tags/v*) ;;
+    *) continue ;;
+  esac
+  [ "$local_sha" = "$ZERO" ] && continue
+  tag="${remote_ref#refs/tags/}"
+  if ! python3 "$root/scripts/release-version.py" check --tag "$tag" --ref "$local_sha"; then
+    echo "pre-push: refusing to push $tag" >&2
+    failed=1
+  fi
+done
+
+exit "$failed"
