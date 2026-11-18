@@ -1,0 +1,21 @@
+[2026-11-17 08:01:12] local.DEBUG: Booting App\Providers\AppServiceProvider
+[2026-11-17 08:02:19] local.INFO: Horizon supervisor started {"workers":4}
+[2026-11-17 08:04:45] local.DEBUG: Cache hit for key articles:featured {"ttl":3600}
+[2026-11-17 08:09:16] local.DEBUG: Dispatched job App\Jobs\SyncLinkMetadata {"link_id":1}
+[2026-11-17 08:09:17] local.DEBUG: Validating external URL https://www.youtube.com/watch?v=243NrYTRYvo
+[2026-11-17 08:12:30] local.INFO: Mailable App\Mail\LinkApproved queued {"link_id":1}
+[2026-11-17 08:15:02] local.WARNING: Slow Eloquent query (184ms) on orders table {"sql":"select * from orders where status = 'pending'"}
+[2026-11-17 08:18:40] local.ERROR: Webhook delivery HTTP 502 from partner endpoint {"url":"https://hooks.partner.test/events","retry_in":30}
+[stacktrace]
+#0 /app/Services/WebhookDispatcher.php(77): Illuminate\Http\Client\Response->throw()
+#1 /app/Jobs/DeliverPartnerWebhook.php(32): App\Services\WebhookDispatcher->send()
+[2026-11-17 08:24:05] local.ERROR: Failed to parse feed XML at line 19 {"feed":"community-rss"}
+[2026-11-17 08:24:06] local.ERROR: Upstream rate limit exceeded (429 Too Many Requests) {"service":"github-api"}
+[2026-11-17 08:30:11] local.INFO: Scheduled command inspire completed in 14ms
+[2026-11-17 08:35:50] local.DEBUG: Session garbage collection pruned 12 expired sessions
+[2026-11-17 08:40:00] local.INFO: User #1 authenticated via personal access token
+[2026-11-17 08:42:18] local.DEBUG: Eloquent eager load categories (2 rows, 0.31ms)
+[2026-11-17 08:45:09] local.WARNING: Deprecated config key mail.driver referenced, use mail.default
+[2026-11-17 08:50:22] local.INFO: Exported 8 rows to storage/exports/users.csv
+[2026-11-17 08:55:01] local.DEBUG: Broadcasting event App\Events\ArticlePublished {"article_id":1}
+[2026-11-17 09:01:44] local.INFO: Queue worker processed App\Mail\LinkApproved in 29ms

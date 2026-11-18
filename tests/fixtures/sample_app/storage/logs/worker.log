@@ -1,0 +1,7 @@
+[2026-11-17 08:40:00] production.INFO: Horizon supervisor started {"processes":4,"balance":"auto"}
+[2026-11-17 08:45:12] production.NOTICE: Memory threshold at 72% on worker-2 {"memory_mb":368}
+[2026-11-17 08:52:44] production.ERROR: Failed to dispatch daily digest batch {"batch_id":"b928-ac01","error":"SQLSTATE[HY000]: General error: 5 database is locked"}
+[stacktrace]
+#0 /var/www/html/app/Jobs/SendDailyDigest.php(63): Illuminate\Database\Connection->statement()
+#1 /var/www/html/vendor/laravel/framework/src/Illuminate/Bus/Dispatcher.php(122): SendDailyDigest->handle()
+[2026-11-17 09:01:05] production.ALERT: High retry rate on queue 'webhooks' {"failed_last_5m":19}

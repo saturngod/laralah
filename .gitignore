@@ -1,0 +1,8 @@
+/target/
+.DS_Store
+
+# Local app state (may contain hostnames and credentials)
+.laralah_ssh.json
+.laralah_settings.json
+.laralah_recent.json
+.laralah_ai_cache.json

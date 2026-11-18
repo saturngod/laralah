@@ -1,0 +1,22 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+define('LARAVEL_START', microtime(true));
+
+require __DIR__ . '/vendor/autoload.php';
+
+$app = require_once __DIR__ . '/bootstrap/app.php';
+
+$argv = $_SERVER['argv'] ?? [];
+$command = $argv[1] ?? 'list';
+
+if ($command === '--version' || $command === '-V') {
+    echo "Laravel Framework " . $app->version() . PHP_EOL;
+    exit(0);
+}
+
+echo "Laravel Playground (" . $app->version() . ")\n";
+echo "Available models: App\\Models\\User, App\\Models\\Order, App\\Models\\Post\n";
+echo "Available mailables: App\\Mail\\InvoiceShipped\n";

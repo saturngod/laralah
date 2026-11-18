@@ -1,0 +1,13 @@
+[2026-11-17 09:12:04] local.INFO: Laravel Console Kernel booted {"env":"local","php":"8.3.36"}
+[2026-11-17 09:14:21] local.DEBUG: Eloquent query executed: select * from "users" where "active" = ? {"bindings":[1],"time_ms":0.42}
+[2026-11-17 09:18:55] local.WARNING: Potential N+1 query detected on App\Models\User::orders {"occurrences":4,"suggestion":"Use User::with('orders')->get()"}
+[2026-11-17 09:22:10] local.ERROR: Stripe webhook signature verification failed {"invoice":"INV-2026-0104","attempt":2,"exception":"Stripe\\Exception\\SignatureVerificationException"}
+[stacktrace]
+#0 /app/Http/Controllers/WebhookController.php(48): Stripe\Webhook::constructEvent()
+#1 /vendor/laravel/framework/src/Illuminate/Routing/Controller.php(54): WebhookController->handle()
+#2 /public/index.php(51): Illuminate\Foundation\Application->handleRequest()
+[2026-11-17 09:25:03] local.CRITICAL: Queue connection 'redis' timed out after 3000ms {"queue":"emails","job":"App\\Jobs\\SendInvoiceShipped"}
+[stacktrace]
+#0 /vendor/laravel/framework/src/Illuminate/Queue/RedisQueue.php(112): Predis\Client->blpop()
+#1 /artisan(35): Illuminate\Console\Application->run()
+[2026-11-17 09:30:19] local.INFO: Mailable App\Mail\InvoiceShipped rendered successfully {"recipient":"jess@laravel.com","bytes":1420}
