@@ -2685,7 +2685,12 @@ mod askpass_tests {
         p.docker_container = "my-app".to_string();
         p.application_folder = "/app".to_string();
         let cmd = build_target_php_command(&p.to_execution_target(), "php").unwrap();
-        assert!(cmd.get_program().to_string_lossy().ends_with("docker"));
+        let program = std::path::Path::new(cmd.get_program());
+        let stem = program
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        assert_eq!(stem, "docker", "unexpected program: {}", program.display());
         let args: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().to_string())
