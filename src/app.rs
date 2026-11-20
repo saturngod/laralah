@@ -188,6 +188,9 @@ pub struct LaralahApp {
     active_dropdown_id: Option<SharedString>,
     ssh_selected_config_label: String,
     ssh_form_kind: ConnectionKind,
+    local_docker_search_input: Entity<TextField>,
+    local_docker_loaded: bool,
+    local_docker_error: Option<String>,
     ssh_form_docker_enabled: bool,
     ssh_docker_fetching: bool,
     ssh_docker_picker_open: bool,
@@ -562,6 +565,13 @@ impl LaralahApp {
             TextField::new("Container name or ID (e.g. laravel.test, a1b2c3d4e5f6)", cx)
                 .with_text_color(0xf3f4f6)
         });
+        let local_docker_search_input = cx.new(|cx| {
+            TextField::new("Search containers by name, image or ID", cx).with_text_color(0xf3f4f6)
+        });
+        cx.observe(&local_docker_search_input, |_, _, cx| {
+            cx.notify();
+        })
+        .detach();
         let ssh_key_input = cx.new(|cx| {
             let mut tf = TextField::new("~/.ssh/id_rsa", cx).with_text_color(0xf3f4f6);
             tf.set_text(default_private_key_path(), cx);
@@ -656,6 +666,9 @@ impl LaralahApp {
             active_dropdown_id: None,
             ssh_selected_config_label: "Preselect SSH Config".to_string(),
             ssh_form_kind: ConnectionKind::Ssh,
+            local_docker_search_input,
+            local_docker_loaded: false,
+            local_docker_error: None,
             ssh_form_docker_enabled: false,
             ssh_docker_fetching: false,
             ssh_docker_picker_open: false,
@@ -1552,6 +1565,9 @@ impl LaralahApp {
             return;
         };
         self.populate_ssh_form(&existing, cx);
+        if existing.is_local_docker() {
+            self.fetch_local_docker_containers(cx);
+        }
         self.ssh_editing_id = Some(existing.id);
         self.ssh_modal_mode = SshModalMode::Form;
         let fh = self.ssh_label_input.focus_handle(cx);
@@ -1590,6 +1606,9 @@ impl LaralahApp {
             tf.set_masked(true, cx);
         });
         self.ssh_form_kind = p.kind;
+        self.local_docker_search_input.update(cx, |tf, cx| tf.set_text("", cx));
+        self.local_docker_loaded = false;
+        self.local_docker_error = None;
         self.ssh_form_docker_enabled = p.docker_enabled;
         self.ssh_docker_fetching = false;
         self.ssh_docker_picker_open = false;
@@ -1635,7 +1654,10 @@ impl LaralahApp {
             }
         }
         let fh = if kind == ConnectionKind::LocalDocker {
-            self.ssh_docker_container_input.focus_handle(cx)
+            self.local_docker_search_input
+                .update(cx, |tf, cx| tf.set_text("", cx));
+            self.fetch_local_docker_containers(cx);
+            self.local_docker_search_input.focus_handle(cx)
         } else {
             self.ssh_host_input.focus_handle(cx)
         };
@@ -1648,8 +1670,7 @@ impl LaralahApp {
             return;
         }
         self.ssh_docker_fetching = true;
-        self.ssh_docker_picker_open = false;
-        self.ssh_form_error = None;
+        self.local_docker_error = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let outcome = cx
@@ -1658,15 +1679,14 @@ impl LaralahApp {
                 .await;
             this.update(cx, |app, cx| {
                 app.ssh_docker_fetching = false;
+                app.local_docker_loaded = true;
                 match outcome {
                     Ok(list) => {
                         app.ssh_detected_containers = list;
-                        app.ssh_docker_picker_open = true;
                     }
                     Err(err) => {
                         app.ssh_detected_containers.clear();
-                        app.ssh_form_error =
-                            Some(format!("Could not fetch Docker containers: {err}"));
+                        app.local_docker_error = Some(format!("{err:#}"));
                     }
                 }
                 cx.notify();
@@ -1775,7 +1795,7 @@ impl LaralahApp {
                         app.ssh_detected_containers.clear();
                         app.ssh_docker_picker_open = false;
                         app.ssh_form_error = Some(format!(
-                            "Could not fetch Docker containers: {err}"
+                            "Could not fetch Docker containers: {err:#}"
                         ));
                     }
                 }
@@ -1968,7 +1988,7 @@ impl LaralahApp {
             .to_string();
         if container.is_empty() {
             self.ssh_form_error =
-                Some("Please enter a Docker container name or ID (or use Fetch).".to_string());
+                Some("Choose a container from the list.".to_string());
             cx.notify();
             return;
         }
@@ -4727,10 +4747,17 @@ impl LaralahApp {
                                                 .enumerate()
                                                 .map(|(idx, prof)| {
                                                     let prof_clone = prof.clone();
-                                                    let sub = format!(
-                                                        "{}@{}:{}",
-                                                        prof.username, prof.host, prof.port
-                                                    );
+                                                    let sub = if prof.is_local_docker() {
+                                                        format!(
+                                                            "docker: {}",
+                                                            prof.docker_container.trim()
+                                                        )
+                                                    } else {
+                                                        format!(
+                                                            "{}@{}:{}",
+                                                            prof.username, prof.host, prof.port
+                                                        )
+                                                    };
                                                     let group = SharedString::from(format!(
                                                         "land-ssh-g-{idx}"
                                                     ));
@@ -9981,6 +10008,335 @@ impl LaralahApp {
             )
     }
 
+    /// Local Docker container picker: the search box only filters; a row click is the choice.
+    fn render_local_docker_picker(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let selected = self
+            .ssh_docker_container_input
+            .read(cx)
+            .text()
+            .trim()
+            .to_string();
+        let query_raw = self
+            .local_docker_search_input
+            .read(cx)
+            .text()
+            .trim()
+            .to_string();
+        let query = query_raw.to_lowercase();
+        let search_empty = query_raw.is_empty();
+        let fetching = self.ssh_docker_fetching;
+        let loaded = self.local_docker_loaded;
+        let error = self.local_docker_error.clone();
+        let all = self.ssh_detected_containers.clone();
+
+        let is_selected = |c: &RemoteDockerContainer| {
+            !selected.is_empty()
+                && (c.name == selected
+                    || c.id == selected
+                    || (selected.len() > c.id.len() && selected.starts_with(&c.id)))
+        };
+        let selected_running = all.iter().any(is_selected);
+        let matches: Vec<(RemoteDockerContainer, bool)> = all
+            .iter()
+            .filter(|c| {
+                query.is_empty()
+                    || c.name.to_lowercase().contains(&query)
+                    || c.image.to_lowercase().contains(&query)
+                    || c.id.to_lowercase().starts_with(&query)
+            })
+            .map(|c| (c.clone(), is_selected(c)))
+            .collect();
+        let exact_match = all
+            .iter()
+            .any(|c| c.name == query_raw || c.id == query_raw);
+        let offer_manual = !search_empty
+            && !exact_match
+            && !query_raw.starts_with('-')
+            && !query_raw.chars().any(char::is_whitespace);
+
+        let search_in = self.local_docker_search_input.clone();
+        let search_click = search_in.clone();
+
+        let status_line = |text: String, color: u32| {
+            div()
+                .px_3()
+                .py_3()
+                .text_xs()
+                .text_color(rgb(color))
+                .child(text)
+                .into_any_element()
+        };
+
+        let mut list_children: Vec<gpui::AnyElement> = Vec::new();
+
+        // A saved choice that isn't running right now still shows as the selection.
+        if loaded && !selected.is_empty() && !selected_running {
+            list_children.push(Self::local_docker_row(
+                "local-docker-opt-saved",
+                &selected,
+                "Not running right now · start it, then press Refresh".to_string(),
+                true,
+                None,
+                cx,
+            ));
+        }
+
+        if let Some(err) = error {
+            list_children.push(status_line(
+                format!("Couldn't reach Docker. Is Docker Desktop running? ({err})"),
+                0xfca5a5,
+            ));
+        } else if !loaded {
+            list_children.push(status_line(
+                "Looking for running containers…".to_string(),
+                0x94a3b8,
+            ));
+        } else if all.is_empty() {
+            list_children.push(status_line(
+                "No running containers. Start one (for example `docker compose up -d`), then press Refresh."
+                    .to_string(),
+                0x94a3b8,
+            ));
+        } else if matches.is_empty() {
+            list_children.push(status_line(
+                format!("No running container matches “{query_raw}”."),
+                0x94a3b8,
+            ));
+        }
+
+        for (ctr, sel) in matches {
+            let name = if ctr.name.is_empty() {
+                ctr.id.clone()
+            } else {
+                ctr.name.clone()
+            };
+            let meta = format!("{} · {} · {}", ctr.id, ctr.image, ctr.workdir);
+            list_children.push(Self::local_docker_row(
+                &format!("local-docker-opt-{}", ctr.id),
+                &name,
+                meta,
+                sel,
+                Some(ctr.workdir.clone()),
+                cx,
+            ));
+        }
+
+        if offer_manual && loaded {
+            let manual = query_raw.clone();
+            list_children.push(
+                div()
+                    .id("local-docker-use-typed")
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(0x263042)))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        svg()
+                            .path("icons/plus.svg")
+                            .size(px(13.0))
+                            .text_color(rgb(0x60a5fa)),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x93c5fd))
+                            .child(format!("Use “{manual}” as the container name or ID")),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let chosen = manual.clone();
+                        this.ssh_docker_container_input
+                            .update(cx, |tf, cx| tf.set_text(chosen, cx));
+                        this.local_docker_search_input
+                            .update(cx, |tf, cx| tf.set_text("", cx));
+                        this.ssh_form_error = None;
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            // Header: label + hint on the left, Refresh on the right
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_end()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(ssh_field_label("Container"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(0x94a3b8))
+                                    .child("Pick a running container. PHP runs inside it with docker exec, no SSH."),
+                            ),
+                    )
+                    .child(settings_action_btn(
+                        "local-docker-refresh",
+                        if fetching { "Refreshing…" } else { "Refresh" },
+                        cx.listener(|this, _, _, cx| {
+                            this.fetch_local_docker_containers(cx);
+                        }),
+                    )),
+            )
+            // One box: search field on top, results underneath
+            .child(
+                div()
+                    .rounded_lg()
+                    .bg(rgb(0x181c23))
+                    .border_1()
+                    .border_color(rgb(0x364052))
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .id("local-docker-search")
+                            .relative()
+                            .h(px(36.0))
+                            .px_3()
+                            .border_b_1()
+                            .border_color(rgb(0x2d3441))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .cursor(gpui::CursorStyle::IBeam)
+                            .on_mouse_down(gpui::MouseButton::Left, move |ev, window, cx| {
+                                cx.stop_propagation();
+                                search_click.update(cx, |tf, cx| {
+                                    tf.handle_mouse_down(ev, window, cx);
+                                });
+                            })
+                            .child(
+                                svg()
+                                    .path("icons/search.svg")
+                                    .size(px(14.0))
+                                    .text_color(rgb(0x94a3b8)),
+                            )
+                            .child(div().flex_1().h_full().overflow_hidden().child(search_in)),
+                    )
+                    .child(
+                        div()
+                            .id("local-docker-list")
+                            // Nested in the scrolling dialog: keep the wheel for this list only.
+                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                            .max_h(px(232.0))
+                            .overflow_y_scroll()
+                            .p_1()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .children(list_children),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// One selectable container row: radio dot, name, and `id · image · workdir`.
+    fn local_docker_row(
+        id: &str,
+        name: &str,
+        meta: String,
+        selected: bool,
+        workdir: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let chosen_name = name.to_string();
+        div()
+            .id(SharedString::from(id.to_string()))
+            .px_2p5()
+            .py_2()
+            .rounded_md()
+            .border_1()
+            .cursor_pointer()
+            .when(selected, |el| el.bg(rgb(0x1e3a5f)).border_color(rgb(0x2563eb)))
+            .when(!selected, |el| {
+                el.border_color(gpui::transparent_black())
+                    .hover(|s| s.bg(rgb(0x263042)))
+            })
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2p5()
+            .child(
+                div()
+                    .size(px(14.0))
+                    .flex_none()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(if selected { rgb(0x2563eb) } else { rgb(0x64748b) })
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(selected, |el| {
+                        el.child(div().size(px(6.0)).rounded_full().bg(rgb(0x2563eb)))
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(rgb(0xf1f5f9))
+                            .child(name.to_string()),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .font_family("Menlo")
+                            .text_xs()
+                            .text_color(rgb(0x94a3b8))
+                            .child(meta),
+                    ),
+            )
+            .when(selected, |el| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .px_1p5()
+                        .py_0p5()
+                        .rounded_sm()
+                        .bg(rgb(0x2563eb))
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(fixed_rgb(0xffffff))
+                        .child("Selected"),
+                )
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let name = chosen_name.clone();
+                this.ssh_docker_container_input
+                    .update(cx, |tf, cx| tf.set_text(name, cx));
+                if let Some(dir) = workdir.clone().filter(|d| d.starts_with('/')) {
+                    this.ssh_folder_input.update(cx, |tf, cx| tf.set_text(dir, cx));
+                }
+                this.ssh_form_error = None;
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
     fn render_ssh_form_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let form_title = if self.ssh_editing_id.is_some() {
             "Edit Connection"
@@ -10218,7 +10574,7 @@ impl LaralahApp {
                             }),
                     ))
                     // 2. Row: Label | Host + Port (22)
-                    .child(
+                    .when(!is_local, |el| el.child(
                         div()
                             .flex()
                             .flex_row()
@@ -10297,9 +10653,9 @@ impl LaralahApp {
                                             )
                                     }),
                             )),
-                    )
+                    ))
                     // 3. Row: Username | Application Folder (host path when Docker OFF, container path when Docker ON)
-                    .child(
+                    .when(!is_local, |el| el.child(
                         div()
                             .flex()
                             .flex_row()
@@ -10326,9 +10682,9 @@ impl LaralahApp {
                                     }))
                                     .child(settings_text_box(self.ssh_folder_input.clone())),
                             ),
-                    )
+                    ))
                     // 3b. Docker Container Switch (On/Off) + Container ID / Name (+ Fetch helper)
-                    .child({
+                    .when(!is_local, |el| el.child({
                         let docker_on = self.ssh_form_docker_enabled;
                         let is_fetching = self.ssh_docker_fetching;
                         let picker_open = self.ssh_docker_picker_open;
@@ -10342,7 +10698,7 @@ impl LaralahApp {
                             .rounded_lg()
                             .bg(rgb(0x232833))
                             .border_1()
-                            .border_color(if docker_on || is_local {
+                            .border_color(if docker_on {
                                 rgb(0x2563eb)
                             } else {
                                 rgb(0x364052)
@@ -10369,22 +10725,20 @@ impl LaralahApp {
                                                     .text_xs()
                                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                                     .text_color(rgb(0xf3f4f6))
-                                                    .child(if is_local { "Local Docker Container" } else { "Docker Container" }),
+                                                    .child("Docker Container"),
                                             )
                                             .child(
                                                 div()
                                                     .text_xs()
                                                     .text_color(rgb(0x94a3b8))
-                                                    .child(if is_local {
-                                                        "Runs PHP with `docker exec` on this machine. No SSH needed."
-                                                    } else if docker_on {
+                                                    .child(if docker_on {
                                                         "SSH into host and execute inside container (folder path above is from Docker)"
                                                     } else {
                                                         "Enable to run PHP / Laravel Tinker inside a Docker container on this server"
                                                     }),
                                             ),
                                     )
-                                    .when(!is_local, |el| el.child(ai_ui::render_macos_switch(
+                                    .child(ai_ui::render_macos_switch(
                                         "ssh-form-docker-switch",
                                         docker_on,
                                         false,
@@ -10392,9 +10746,9 @@ impl LaralahApp {
                                         cx.listener(|this, _, window, cx| {
                                             this.toggle_ssh_form_docker(window, cx);
                                         }),
-                                    ))),
+                                    )),
                             )
-                            .when(docker_on || is_local, |el| {
+                            .when(docker_on, |el| {
                                 el.child(
                                     div()
                                         .pt_1()
@@ -10453,6 +10807,8 @@ impl LaralahApp {
                                             sub.child(
                                                 div()
                                                     .id("ssh-docker-detected-list")
+                            // Nested in the scrolling dialog: keep the wheel for this list only.
+                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                                                     .mt_1()
                                                     .max_h(px(160.0))
                                                     .overflow_y_scroll()
@@ -10572,6 +10928,33 @@ impl LaralahApp {
                                         }),
                                 )
                             })
+                    }))
+                    // 3c. Local Docker: pick a running container on this machine
+                    .when(is_local, |el| {
+                        el.child(self.render_local_docker_picker(cx)).child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap_3p5()
+                                .child(
+                                    div()
+                                        .w_1_2()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1p5()
+                                        .child(ssh_field_label("Label"))
+                                        .child(settings_text_box(self.ssh_label_input.clone())),
+                                )
+                                .child(
+                                    div()
+                                        .w_1_2()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1p5()
+                                        .child(ssh_field_label("Folder in container"))
+                                        .child(settings_text_box(self.ssh_folder_input.clone())),
+                                ),
+                        )
                     })
                     // 4. Local path + [ Select ]
                     .child(

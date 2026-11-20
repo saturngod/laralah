@@ -48,36 +48,35 @@ pub fn is_laravel_project(path: &str) -> bool {
 
 /// Finds the `docker` CLI. Apps started from the macOS Dock or Finder get a minimal PATH,
 /// so the usual Docker Desktop / OrbStack / Homebrew install locations are checked too.
+/// Not cached: Docker Desktop updates can move the CLI (e.g. drop the `/usr/local/bin`
+/// symlink in favour of `~/.docker/bin`) while Laralah is running.
 pub fn docker_binary() -> String {
-    static BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    BIN.get_or_init(|| {
-        let exe = if cfg!(windows) { "docker.exe" } else { "docker" };
-        if let Ok(path_var) = std::env::var("PATH") {
-            for dir in std::env::split_paths(&path_var) {
-                let candidate = dir.join(exe);
-                if candidate.is_file() {
-                    return candidate.to_string_lossy().to_string();
-                }
+    let exe = if cfg!(windows) { "docker.exe" } else { "docker" };
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return candidate.to_string_lossy().to_string();
             }
         }
-        let mut fallbacks: Vec<std::path::PathBuf> = vec![
-            "/usr/local/bin/docker".into(),
-            "/opt/homebrew/bin/docker".into(),
-            "/Applications/Docker.app/Contents/Resources/bin/docker".into(),
-            "/usr/bin/docker".into(),
-        ];
-        if let Some(home) = crate::paths::home_dir() {
-            fallbacks.insert(0, home.join(".orbstack/bin/docker"));
-            fallbacks.push(home.join(".docker/bin/docker"));
-            fallbacks.push(home.join(".rd/bin/docker"));
-        }
-        fallbacks
-            .into_iter()
-            .find(|p| p.is_file())
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| exe.to_string())
-    })
-    .clone()
+    }
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(home) = crate::paths::home_dir() {
+        candidates.push(home.join(".docker/bin/docker"));
+        candidates.push(home.join(".orbstack/bin/docker"));
+        candidates.push(home.join(".rd/bin/docker"));
+    }
+    candidates.extend([
+        "/Applications/Docker.app/Contents/Resources/bin/docker".into(),
+        "/usr/local/bin/docker".into(),
+        "/opt/homebrew/bin/docker".into(),
+        "/usr/bin/docker".into(),
+    ]);
+    candidates
+        .into_iter()
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| exe.to_string())
 }
 
 /// Running containers on this machine, with each one's configured working directory,
@@ -2692,5 +2691,21 @@ mod askpass_tests {
             .map(|a| a.to_string_lossy().to_string())
             .collect();
         assert_eq!(args, ["exec", "-i", "-w", "/app", "my-app", "php"]);
+    }
+
+    #[test]
+    #[ignore = "needs a running local Docker container in LARALAH_E2E_CONTAINER"]
+    fn local_docker_e2e() {
+        let container = std::env::var("LARALAH_E2E_CONTAINER").unwrap();
+        let found = detect_local_docker_containers().expect("fetch containers");
+        eprintln!("docker={} found={found:?}", docker_binary());
+        assert!(found.iter().any(|c| container.starts_with(&c.id) || c.name == container));
+        let mut p = crate::ssh::SshConnectionProfile::new_empty();
+        p.kind = crate::ssh::ConnectionKind::LocalDocker;
+        p.docker_container = container;
+        p.application_folder = "/var/www/html".to_string();
+        let res = evaluate_code("return 1 + 2;", &p.to_execution_target());
+        eprintln!("result={res:?}");
+        assert!(format!("{res:?}").contains('3'));
     }
 }
