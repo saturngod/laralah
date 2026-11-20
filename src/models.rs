@@ -16,6 +16,9 @@ pub enum ExecutionTarget {
     Ssh {
         #[serde(default)]
         id: String,
+        /// Saved "Local Docker" connection: `docker exec` on this machine, no SSH hop.
+        #[serde(default)]
+        local_docker: bool,
         name: String,
         host: String,
         port: u16,
@@ -52,6 +55,18 @@ impl ExecutionTarget {
             }
             ExecutionTarget::Ssh {
                 name,
+                local_docker: true,
+                is_production,
+                ..
+            } => {
+                if *is_production {
+                    format!("Docker: {name} [PROD]")
+                } else {
+                    format!("Docker: {name}")
+                }
+            }
+            ExecutionTarget::Ssh {
+                name,
                 docker_container,
                 is_production,
                 ..
@@ -73,6 +88,15 @@ impl ExecutionTarget {
         match self {
             ExecutionTarget::Local { .. } => "LOCAL",
             ExecutionTarget::Docker { .. } => "DOCKER",
+            ExecutionTarget::Ssh {
+                local_docker: true,
+                is_production: true,
+                ..
+            } => "DOCKER PROD",
+            ExecutionTarget::Ssh {
+                local_docker: true,
+                ..
+            } => "DOCKER",
             ExecutionTarget::Ssh {
                 is_production: true,
                 docker_container: Some(_),

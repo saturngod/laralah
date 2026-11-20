@@ -28,7 +28,7 @@ It is a native app written in Rust (with [GPUI](https://www.gpui.rs/)). It runs 
 - **Logs** (Cmd+L) – read and search your Laravel log files.
 - **Mail preview** – look at your mailables.
 - **Tabs** – keep many scratch tabs open at the same time.
-- **SSH and Docker** – run code on a remote server or inside a Docker container.
+- **SSH and Docker** – run code on a remote server, in a Docker container on that server, or in a Docker container on your own computer (Connection Type: Local Docker, no SSH needed).
 - **AI helper** (Cmd+I) – ask an AI coding tool for help. Works with Claude Code, Codex, OpenCode, Qoder, and Antigravity, if you have them installed.
 - **Command palette** (Cmd+P) – find any action quickly.
 - **Syntax check** – PHP errors show up before you run.

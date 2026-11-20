@@ -22,7 +22,7 @@ use crate::models::{
 use crate::object_graph::{has_object_graph, ObjectGraphView};
 use crate::runner::{
     ModelSchemaInfo, RemoteDockerContainer, default_ssh_targets, default_workspace_fallback_path,
-    detect_docker_containers, detect_local_laravel_version, detect_remote_ssh_docker_containers,
+    detect_docker_containers, detect_local_docker_containers, detect_local_laravel_version, detect_remote_ssh_docker_containers,
     discover_laravel_projects, evaluate_code_with_options, is_laravel_project,
     lint_php_syntax_with_bin, resolve_php_binary,
 };
@@ -34,7 +34,7 @@ use crate::settings::{
     save_settings, search_settings, shortcut_reference_rows,
 };
 use crate::ssh::{
-    SSH_COLOR_SWATCHES, SshAuthMethod, SshConfigHost, SshConnectionProfile, SshStore,
+    ConnectionKind, SSH_COLOR_SWATCHES, SshAuthMethod, SshConfigHost, SshConnectionProfile, SshStore,
     default_docker_application_folder, default_private_key_path, default_ssh_application_folder,
     default_ssh_color, generate_ssh_id, load_ssh_store, load_system_ssh_config, save_ssh_store,
 };
@@ -187,6 +187,7 @@ pub struct LaralahApp {
     ssh_config_hosts: Vec<SshConfigHost>,
     active_dropdown_id: Option<SharedString>,
     ssh_selected_config_label: String,
+    ssh_form_kind: ConnectionKind,
     ssh_form_docker_enabled: bool,
     ssh_docker_fetching: bool,
     ssh_docker_picker_open: bool,
@@ -654,6 +655,7 @@ impl LaralahApp {
             ssh_config_hosts,
             active_dropdown_id: None,
             ssh_selected_config_label: "Preselect SSH Config".to_string(),
+            ssh_form_kind: ConnectionKind::Ssh,
             ssh_form_docker_enabled: false,
             ssh_docker_fetching: false,
             ssh_docker_picker_open: false,
@@ -1564,7 +1566,7 @@ impl LaralahApp {
             .update(cx, |tf, cx| tf.set_text(p.port.to_string(), cx));
         self.ssh_user_input
             .update(cx, |tf, cx| tf.set_text(&p.username, cx));
-        let folder_placeholder = if p.docker_enabled {
+        let folder_placeholder = if p.docker_enabled || p.is_local_docker() {
             default_docker_application_folder()
         } else {
             default_ssh_application_folder()
@@ -1587,6 +1589,7 @@ impl LaralahApp {
             tf.set_text(&passphrase, cx);
             tf.set_masked(true, cx);
         });
+        self.ssh_form_kind = p.kind;
         self.ssh_form_docker_enabled = p.docker_enabled;
         self.ssh_docker_fetching = false;
         self.ssh_docker_picker_open = false;
@@ -1598,6 +1601,79 @@ impl LaralahApp {
         self.ssh_selected_config_label = "Preselect SSH Config".to_string();
         self.active_dropdown_id = None;
         self.ssh_form_error = None;
+    }
+
+    fn set_ssh_form_kind(&mut self, kind: ConnectionKind, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ssh_form_kind == kind {
+            return;
+        }
+        self.ssh_form_kind = kind;
+        self.ssh_docker_picker_open = false;
+        self.ssh_detected_containers.clear();
+        self.active_dropdown_id = None;
+        self.ssh_form_error = None;
+        let docker_folder = kind == ConnectionKind::LocalDocker || self.ssh_form_docker_enabled;
+        let current_folder = self.ssh_folder_input.read(cx).text().trim().to_string();
+        let (placeholder, swap_from) = if docker_folder {
+            (default_docker_application_folder(), default_ssh_application_folder())
+        } else {
+            (default_ssh_application_folder(), default_docker_application_folder())
+        };
+        self.ssh_folder_input.update(cx, |tf, cx| {
+            tf.set_placeholder(placeholder, cx);
+            if current_folder.is_empty() || current_folder == swap_from {
+                tf.set_text(placeholder, cx);
+            }
+        });
+        // A new connection defaults to red ("production"), which turns Auto-Run off. A local
+        // dev container is not production, so start it on a calmer color.
+        if self.ssh_editing_id.is_none() {
+            if kind == ConnectionKind::LocalDocker && self.ssh_form_color_hex == default_ssh_color() {
+                self.ssh_form_color_hex = 0x38bdf8;
+            } else if kind == ConnectionKind::Ssh && self.ssh_form_color_hex == 0x38bdf8 {
+                self.ssh_form_color_hex = default_ssh_color();
+            }
+        }
+        let fh = if kind == ConnectionKind::LocalDocker {
+            self.ssh_docker_container_input.focus_handle(cx)
+        } else {
+            self.ssh_host_input.focus_handle(cx)
+        };
+        window.focus(&fh);
+        cx.notify();
+    }
+
+    fn fetch_local_docker_containers(&mut self, cx: &mut Context<Self>) {
+        if self.ssh_docker_fetching {
+            return;
+        }
+        self.ssh_docker_fetching = true;
+        self.ssh_docker_picker_open = false;
+        self.ssh_form_error = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move { detect_local_docker_containers() })
+                .await;
+            this.update(cx, |app, cx| {
+                app.ssh_docker_fetching = false;
+                match outcome {
+                    Ok(list) => {
+                        app.ssh_detected_containers = list;
+                        app.ssh_docker_picker_open = true;
+                    }
+                    Err(err) => {
+                        app.ssh_detected_containers.clear();
+                        app.ssh_form_error =
+                            Some(format!("Could not fetch Docker containers: {err}"));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn toggle_ssh_form_docker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1627,6 +1703,10 @@ impl LaralahApp {
     }
 
     fn fetch_ssh_docker_containers(&mut self, cx: &mut Context<Self>) {
+        if self.ssh_form_kind == ConnectionKind::LocalDocker {
+            self.fetch_local_docker_containers(cx);
+            return;
+        }
         if self.ssh_docker_fetching {
             return;
         }
@@ -1775,6 +1855,10 @@ impl LaralahApp {
     }
 
     fn save_ssh_form(&mut self, and_connect: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ssh_form_kind == ConnectionKind::LocalDocker {
+            self.save_local_docker_form(and_connect, window, cx);
+            return;
+        }
         let host = self.ssh_host_input.read(cx).text().trim().to_string();
         if host.is_empty() {
             self.ssh_form_error = Some("Please enter a Host (IP address or domain).".to_string());
@@ -1847,6 +1931,7 @@ impl LaralahApp {
 
         let profile = SshConnectionProfile {
             id: id.clone(),
+            kind: ConnectionKind::Ssh,
             label,
             host,
             port,
@@ -1866,6 +1951,76 @@ impl LaralahApp {
             group: self.ssh_form_group.clone(),
         };
 
+        self.commit_connection_profile(profile, and_connect, window, cx);
+    }
+
+    fn save_local_docker_form(
+        &mut self,
+        and_connect: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let container = self
+            .ssh_docker_container_input
+            .read(cx)
+            .text()
+            .trim()
+            .to_string();
+        if container.is_empty() {
+            self.ssh_form_error =
+                Some("Please enter a Docker container name or ID (or use Fetch).".to_string());
+            cx.notify();
+            return;
+        }
+        if container.starts_with('-') || container.chars().any(char::is_whitespace) {
+            self.ssh_form_error =
+                Some("Container name or ID cannot start with '-' or contain spaces.".to_string());
+            cx.notify();
+            return;
+        }
+        let folder_raw = self.ssh_folder_input.read(cx).text().trim().to_string();
+        let application_folder = if folder_raw.is_empty() {
+            default_docker_application_folder().to_string()
+        } else {
+            folder_raw
+        };
+        if !application_folder.starts_with('/') {
+            self.ssh_form_error = Some(
+                "Application Folder must be an absolute container path (e.g. /var/www/html)."
+                    .to_string(),
+            );
+            cx.notify();
+            return;
+        }
+        let label_raw = self.ssh_label_input.read(cx).text().trim().to_string();
+        let id = self.ssh_editing_id.clone().unwrap_or_else(generate_ssh_id);
+        let mut profile = SshConnectionProfile::new_empty();
+        profile.id = id;
+        profile.kind = ConnectionKind::LocalDocker;
+        profile.label = if label_raw.is_empty() {
+            container.clone()
+        } else {
+            label_raw
+        };
+        profile.host = String::new();
+        profile.application_folder = application_folder;
+        profile.docker_enabled = true;
+        profile.docker_container = container;
+        profile.local_path = self.ssh_form_local_path.clone();
+        profile.auth_method = SshAuthMethod::SshAgent;
+        profile.color_hex = self.ssh_form_color_hex;
+        profile.group = self.ssh_form_group.clone();
+        self.commit_connection_profile(profile, and_connect, window, cx);
+    }
+
+    fn commit_connection_profile(
+        &mut self,
+        profile: SshConnectionProfile,
+        and_connect: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = profile.id.clone();
         if let Some(pos) = self
             .ssh_store
             .connections
@@ -2679,6 +2834,12 @@ impl LaralahApp {
             ExecutionTarget::Docker { container_name, .. } => {
                 (format!("Docker · {container_name}"), 0x0284c7)
             }
+            ExecutionTarget::Ssh {
+                name,
+                local_docker: true,
+                color_hex,
+                ..
+            } => (format!("Docker · {name}"), *color_hex),
             ExecutionTarget::Ssh {
                 name,
                 docker_container,
@@ -9637,6 +9798,10 @@ impl LaralahApp {
                                 let docker_opt =
                                     prof.active_docker_container().map(str::to_string);
                                 let subtitle = match docker_opt.as_deref() {
+                                    Some(c) if prof.is_local_docker() => format!(
+                                        "local docker: {} · {}",
+                                        c, prof.application_folder
+                                    ),
                                     Some(c) => format!(
                                         "{}@{}:{} · docker: {} · {}",
                                         prof.username,
@@ -9837,6 +10002,7 @@ impl LaralahApp {
             .unwrap_or("None")
             .to_string();
         let is_masked = self.ssh_passphrase_input.read(cx).is_masked();
+        let is_local = self.ssh_form_kind == ConnectionKind::LocalDocker;
 
         div()
             .flex_1()
@@ -9955,8 +10121,48 @@ impl LaralahApp {
                                 .child(err.clone()),
                         )
                     })
-                    // 1. Load SSH Config
+                    // 0. Connection type: SSH server or a Docker container on this machine
                     .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1p5()
+                            .child(ssh_field_label("Connection Type"))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .p_0p5()
+                                    .gap_0p5()
+                                    .rounded_lg()
+                                    .bg(rgb(0x181c23))
+                                    .border_1()
+                                    .border_color(rgb(0x364052))
+                                    .children([ConnectionKind::Ssh, ConnectionKind::LocalDocker].into_iter().map(|kind| {
+                                        let selected = self.ssh_form_kind == kind;
+                                        div()
+                                            .id(SharedString::from(format!("ssh-form-kind-{kind:?}")))
+                                            .flex_1()
+                                            .py_1p5()
+                                            .rounded_md()
+                                            .flex()
+                                            .justify_center()
+                                            .cursor_pointer()
+                                            .text_xs()
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .when(selected, |el| el.bg(rgb(0x2563eb)).text_color(fixed_rgb(0xffffff)))
+                                            .when(!selected, |el| {
+                                                el.text_color(rgb(0x94a3b8)).hover(|s| s.bg(rgb(0x262c38)))
+                                            })
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.set_ssh_form_kind(kind, window, cx);
+                                            }))
+                                            .child(kind.label())
+                                    })),
+                            ),
+                    )
+                    // 1. Load SSH Config
+                    .when(!is_local, |el| el.child(
                         div()
                             .flex()
                             .flex_col()
@@ -10010,7 +10216,7 @@ impl LaralahApp {
                                     cx,
                                 )
                             }),
-                    )
+                    ))
                     // 2. Row: Label | Host + Port (22)
                     .child(
                         div()
@@ -10026,7 +10232,7 @@ impl LaralahApp {
                                     .child(ssh_field_label("Label"))
                                     .child(settings_text_box(self.ssh_label_input.clone())),
                             )
-                            .child(
+                            .when(!is_local, |el| el.child(
                                 div()
                                     .w_1_2()
                                     .flex()
@@ -10090,7 +10296,7 @@ impl LaralahApp {
                                                     .child(port_in),
                                             )
                                     }),
-                            ),
+                            )),
                     )
                     // 3. Row: Username | Application Folder (host path when Docker OFF, container path when Docker ON)
                     .child(
@@ -10098,7 +10304,7 @@ impl LaralahApp {
                             .flex()
                             .flex_row()
                             .gap_3p5()
-                            .child(
+                            .when(!is_local, |el| el.child(
                                 div()
                                     .w_1_2()
                                     .flex()
@@ -10106,14 +10312,14 @@ impl LaralahApp {
                                     .gap_1p5()
                                     .child(ssh_field_label("Username"))
                                     .child(settings_text_box(self.ssh_user_input.clone())),
-                            )
+                            ))
                             .child(
                                 div()
                                     .w_1_2()
                                     .flex()
                                     .flex_col()
                                     .gap_1p5()
-                                    .child(ssh_field_label(if self.ssh_form_docker_enabled {
+                                    .child(ssh_field_label(if self.ssh_form_docker_enabled || is_local {
                                         "Docker Application Folder"
                                     } else {
                                         "Application Folder"
@@ -10136,7 +10342,7 @@ impl LaralahApp {
                             .rounded_lg()
                             .bg(rgb(0x232833))
                             .border_1()
-                            .border_color(if docker_on {
+                            .border_color(if docker_on || is_local {
                                 rgb(0x2563eb)
                             } else {
                                 rgb(0x364052)
@@ -10163,20 +10369,22 @@ impl LaralahApp {
                                                     .text_xs()
                                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                                     .text_color(rgb(0xf3f4f6))
-                                                    .child("Docker Container"),
+                                                    .child(if is_local { "Local Docker Container" } else { "Docker Container" }),
                                             )
                                             .child(
                                                 div()
                                                     .text_xs()
                                                     .text_color(rgb(0x94a3b8))
-                                                    .child(if docker_on {
+                                                    .child(if is_local {
+                                                        "Runs PHP with `docker exec` on this machine. No SSH needed."
+                                                    } else if docker_on {
                                                         "SSH into host and execute inside container (folder path above is from Docker)"
                                                     } else {
                                                         "Enable to run PHP / Laravel Tinker inside a Docker container on this server"
                                                     }),
                                             ),
                                     )
-                                    .child(ai_ui::render_macos_switch(
+                                    .when(!is_local, |el| el.child(ai_ui::render_macos_switch(
                                         "ssh-form-docker-switch",
                                         docker_on,
                                         false,
@@ -10184,9 +10392,9 @@ impl LaralahApp {
                                         cx.listener(|this, _, window, cx| {
                                             this.toggle_ssh_form_docker(window, cx);
                                         }),
-                                    )),
+                                    ))),
                             )
-                            .when(docker_on, |el| {
+                            .when(docker_on || is_local, |el| {
                                 el.child(
                                     div()
                                         .pt_1()
@@ -10418,7 +10626,7 @@ impl LaralahApp {
                             ),
                     )
                     // 5. Authentication Method
-                    .child(
+                    .when(!is_local, |el| el.child(
                         div()
                             .flex()
                             .flex_col()
@@ -10454,9 +10662,9 @@ impl LaralahApp {
                                 ],
                                 cx,
                             )),
-                    )
+                    ))
                     // 6. Private Key + [ Select ] (when Private Key auth is chosen)
-                    .when(self.ssh_form_auth_method == SshAuthMethod::PrivateKey, |el| {
+                    .when(!is_local && self.ssh_form_auth_method == SshAuthMethod::PrivateKey, |el| {
                         let key_in = self.ssh_key_input.clone();
                         let key_click = key_in.clone();
                         el.child(
@@ -10507,7 +10715,7 @@ impl LaralahApp {
                         )
                     })
                     // 7. Passphrase / Password + eye reveal toggle
-                    .when(self.ssh_form_auth_method != SshAuthMethod::SshAgent, |el| {
+                    .when(!is_local && self.ssh_form_auth_method != SshAuthMethod::SshAgent, |el| {
                         let pass_in = self.ssh_passphrase_input.clone();
                         let pass_click = pass_in.clone();
                         el.child(

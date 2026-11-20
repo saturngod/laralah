@@ -46,8 +46,85 @@ pub fn is_laravel_project(path: &str) -> bool {
     p.join("artisan").exists() && p.join("bootstrap").join("app.php").exists()
 }
 
+/// Finds the `docker` CLI. Apps started from the macOS Dock or Finder get a minimal PATH,
+/// so the usual Docker Desktop / OrbStack / Homebrew install locations are checked too.
+pub fn docker_binary() -> String {
+    static BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BIN.get_or_init(|| {
+        let exe = if cfg!(windows) { "docker.exe" } else { "docker" };
+        if let Ok(path_var) = std::env::var("PATH") {
+            for dir in std::env::split_paths(&path_var) {
+                let candidate = dir.join(exe);
+                if candidate.is_file() {
+                    return candidate.to_string_lossy().to_string();
+                }
+            }
+        }
+        let mut fallbacks: Vec<std::path::PathBuf> = vec![
+            "/usr/local/bin/docker".into(),
+            "/opt/homebrew/bin/docker".into(),
+            "/Applications/Docker.app/Contents/Resources/bin/docker".into(),
+            "/usr/bin/docker".into(),
+        ];
+        if let Some(home) = crate::paths::home_dir() {
+            fallbacks.insert(0, home.join(".orbstack/bin/docker"));
+            fallbacks.push(home.join(".docker/bin/docker"));
+            fallbacks.push(home.join(".rd/bin/docker"));
+        }
+        fallbacks
+            .into_iter()
+            .find(|p| p.is_file())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| exe.to_string())
+    })
+    .clone()
+}
+
+/// Running containers on this machine, with each one's configured working directory,
+/// for the "Local Docker" connection form.
+pub fn detect_local_docker_containers() -> Result<Vec<RemoteDockerContainer>> {
+    let docker = docker_binary();
+    let ps = Command::new(&docker)
+        .args(["ps", "-q"])
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("Could not run '{docker}'. Is Docker installed?"))?;
+    if !ps.status.success() {
+        let stderr = String::from_utf8_lossy(&ps.stderr).trim().to_string();
+        anyhow::bail!(
+            "{}",
+            if stderr.is_empty() {
+                format!("docker ps exited with status {}", ps.status)
+            } else {
+                stderr
+            }
+        );
+    }
+    let ids: Vec<String> = String::from_utf8_lossy(&ps.stdout)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let out = Command::new(&docker)
+        .arg("inspect")
+        .arg("--format")
+        .arg("{{.Name}}\t{{.Id}}\t{{.Config.Image}}\t{{.Config.WorkingDir}}")
+        .args(&ids)
+        .stdin(Stdio::null())
+        .output()
+        .context("docker inspect failed")?;
+    if !out.status.success() {
+        anyhow::bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(parse_remote_docker_inspect_output(&String::from_utf8_lossy(
+        &out.stdout,
+    )))
+}
+
 pub fn detect_docker_containers(fallback_local_path: &str) -> Vec<ExecutionTarget> {
-    let output = Command::new("docker")
+    let output = Command::new(docker_binary())
         .args(["ps", "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}"])
         .output();
 
@@ -296,8 +373,27 @@ fn build_target_php_command(
             workdir,
             ..
         } => {
-            let mut c = Command::new("docker");
+            let mut c = Command::new(docker_binary());
             c.args(["exec", "-i", "-w", workdir, container_id, "php"]);
+            Ok(c)
+        }
+        ExecutionTarget::Ssh {
+            local_docker: true,
+            workdir,
+            docker_container,
+            ..
+        } => {
+            let container = docker_container
+                .as_deref()
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .context("This Docker connection has no container name or ID")?;
+            let workdir = match workdir.trim() {
+                "" => crate::ssh::default_docker_application_folder(),
+                w => w,
+            };
+            let mut c = Command::new(docker_binary());
+            c.args(["exec", "-i", "-w", workdir, container, "php"]);
             Ok(c)
         }
         ExecutionTarget::Ssh {
@@ -2581,5 +2677,20 @@ mod askpass_tests {
             "",
         );
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn local_docker_connection_runs_docker_exec_without_ssh() {
+        let mut p = crate::ssh::SshConnectionProfile::new_empty();
+        p.kind = crate::ssh::ConnectionKind::LocalDocker;
+        p.docker_container = "my-app".to_string();
+        p.application_folder = "/app".to_string();
+        let cmd = build_target_php_command(&p.to_execution_target(), "php").unwrap();
+        assert!(cmd.get_program().to_string_lossy().ends_with("docker"));
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args, ["exec", "-i", "-w", "/app", "my-app", "php"]);
     }
 }
