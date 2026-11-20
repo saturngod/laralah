@@ -9475,10 +9475,10 @@ impl LaralahApp {
             )
     }
 
-    fn render_ssh_modal(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_ssh_modal(&self, viewport_w: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let modal_body: gpui::AnyElement = match self.ssh_modal_mode {
-            SshModalMode::List => self.render_ssh_list_view(cx).into_any_element(),
-            SshModalMode::Form => self.render_ssh_form_view(cx).into_any_element(),
+            SshModalMode::List => self.render_ssh_list_view(viewport_w, cx).into_any_element(),
+            SshModalMode::Form => self.render_ssh_form_view(viewport_w, cx).into_any_element(),
         };
 
         let title = match self.ssh_modal_mode {
@@ -9569,11 +9569,12 @@ impl LaralahApp {
             )
     }
 
-    fn render_ssh_list_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let query = self.ssh_search_input.read(cx).text().trim().to_lowercase();
+    fn render_ssh_list_view(&self, viewport_w: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        let query_raw = self.ssh_search_input.read(cx).text().trim().to_string();
+        let query = query_raw.to_lowercase();
         let search_empty = self.ssh_search_input.read(cx).text().is_empty();
         let active_ssh_id = match &self.active_target {
-            ExecutionTarget::Ssh { id, .. } => Some(id.as_str()),
+            ExecutionTarget::Ssh { id, .. } => Some(id.clone()),
             _ => None,
         };
 
@@ -9585,7 +9586,8 @@ impl LaralahApp {
                 || p.host.to_lowercase().contains(&query)
                 || p.username.to_lowercase().contains(&query)
                 || p.application_folder.to_lowercase().contains(&query)
-                || (p.docker_enabled && p.docker_container.to_lowercase().contains(&query))
+                || (p.active_docker_container().is_some()
+                    && p.docker_container.to_lowercase().contains(&query))
                 || p.group
                     .as_deref()
                     .unwrap_or("")
@@ -9621,72 +9623,36 @@ impl LaralahApp {
             .cloned()
             .collect();
         if !ungrouped.is_empty() {
-            sections.push((None, ungrouped));
+            let title = if sections.is_empty() { None } else { Some(String::new()) };
+            sections.push((title, ungrouped));
         }
+
+        let no_connections = self.ssh_store.connections.is_empty();
+        let no_matches = !no_connections
+            && !query.is_empty()
+            && sections.iter().all(|(_, items)| items.is_empty());
+
+        // Card grid: as many ~340px columns as the page column fits.
+        let column_w = (viewport_w.min(CONNECTIONS_LIST_MAX_W) - 48.0).max(300.0);
+        let cols = ((column_w + 12.0) / 352.0).floor().clamp(1.0, 3.0) as u16;
+
+        let search_in = self.ssh_search_input.clone();
 
         div()
             .flex_1()
             .overflow_hidden()
             .flex()
             .flex_col()
-            // Search bar + `+ Connection` / `+ Group` buttons matching screenshot 1
-            .child(centered_band(
+            // Toolbar: search on the left, actions on the right, all on one row.
+            .child(centered_band_w(
+                CONNECTIONS_LIST_MAX_W,
                 0x2d323e,
                 div()
-                    .px_5()
-                    .pt_4()
-                    .pb_3()
+                    .px_6()
+                    .py_4()
                     .flex()
                     .flex_col()
                     .gap_3()
-                    // Search input with `Press [ CMD + F ] to focus search` overlay when empty
-                    .child(
-                        div()
-                            .id("ssh-search-box")
-                            .relative()
-                            .h(px(38.0))
-                            .px_3p5()
-                            .rounded_md()
-                            .bg(rgb(0x363c49))
-                            .border_1()
-                            .border_color(rgb(0x454d5e))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .cursor_text()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                let fh = this.ssh_search_input.focus_handle(cx);
-                                window.focus(&fh);
-                            }))
-                            .child(self.ssh_search_input.clone())
-                            .when(search_empty, |el| {
-                                el.child(
-                                    div()
-                                        .absolute()
-                                        .left(px(14.0))
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .gap_2()
-                                        .text_xs()
-                                        .text_color(rgb(0xd1d5db))
-                                        .child("Press")
-                                        .child(
-                                            div()
-                                                .px_2()
-                                                .py_0p5()
-                                                .rounded_sm()
-                                                .border_1()
-                                                .border_color(rgb(0xd1d5db))
-                                                .font_weight(gpui::FontWeight::BOLD)
-                                                .text_color(rgb(0xffffff))
-                                                .child("CMD + F"),
-                                        )
-                                        .child("to focus search"),
-                                )
-                            }),
-                    )
-                    // `+ Connection` & `+ Group` buttons row
                     .child(
                         div()
                             .flex()
@@ -9695,34 +9661,80 @@ impl LaralahApp {
                             .gap_2p5()
                             .child(
                                 div()
-                                    .id("ssh-btn-new-connection")
-                                    .px_4()
-                                    .py_2()
-                                    .rounded_md()
-                                    .bg(rgb(0x2563eb))
-                                    .hover(|s| s.bg(rgb(0x3b82f6)))
-                                    .cursor_pointer()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .text_color(fixed_rgb(0xffffff))
+                                    .id("ssh-search-box")
+                                    .flex_1()
+                                    .relative()
+                                    .h(px(36.0))
+                                    .px_3()
+                                    .rounded_lg()
+                                    .bg(rgb(0x181c23))
+                                    .border_1()
+                                    .border_color(rgb(0x364052))
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_2()
+                                    .cursor_text()
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.start_new_ssh_connection(window, cx);
+                                        let fh = this.ssh_search_input.focus_handle(cx);
+                                        window.focus(&fh);
                                     }))
-                                    .child("+ Connection"),
+                                    .child(
+                                        svg()
+                                            .path("icons/search.svg")
+                                            .flex_none()
+                                            .size(px(14.0))
+                                            .text_color(rgb(0x94a3b8)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .h_full()
+                                            .overflow_hidden()
+                                            .child(search_in),
+                                    )
+                                    .when(search_empty, |el| {
+                                        el.child(
+                                            div()
+                                                .absolute()
+                                                .left(px(34.0))
+                                                .top_0()
+                                                .bottom_0()
+                                                .flex()
+                                                .items_center()
+                                                .text_xs()
+                                                .text_color(rgb(0x7c8799))
+                                                .child("Search by name, host, container, folder or group"),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .px_1p5()
+                                            .rounded_sm()
+                                            .border_1()
+                                            .border_color(rgb(0x3b4558))
+                                            .text_xs()
+                                            .text_color(rgb(0x94a3b8))
+                                            .child("⌘F"),
+                                    ),
                             )
                             .child(
                                 div()
                                     .id("ssh-btn-new-group")
-                                    .px_4()
-                                    .py_2()
-                                    .rounded_md()
+                                    .flex_none()
+                                    .h(px(36.0))
+                                    .px_3p5()
+                                    .rounded_lg()
                                     .bg(rgb(0x262c38))
                                     .border_1()
                                     .border_color(rgb(0x454d5e))
                                     .hover(|s| s.bg(rgb(0x323948)))
                                     .cursor_pointer()
+                                    .flex()
+                                    .items_center()
                                     .text_xs()
-                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(rgb(0xf3f4f6))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.ssh_creating_group = !this.ssh_creating_group;
@@ -9732,39 +9744,69 @@ impl LaralahApp {
                                         }
                                         cx.notify();
                                     }))
-                                    .child("+ Group"),
+                                    .child("New Group"),
+                            )
+                            .child(
+                                div()
+                                    .id("ssh-btn-new-connection")
+                                    .flex_none()
+                                    .h(px(36.0))
+                                    .px_3p5()
+                                    .rounded_lg()
+                                    .bg(rgb(0x2563eb))
+                                    .hover(|s| s.bg(rgb(0x3b82f6)))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(fixed_rgb(0xffffff))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.start_new_ssh_connection(window, cx);
+                                    }))
+                                    .child(
+                                        svg()
+                                            .path("icons/plus.svg")
+                                            .size(px(13.0))
+                                            .text_color(fixed_rgb(0xffffff)),
+                                    )
+                                    .child("New Connection"),
                             ),
                     )
                     // Optional inline New Group bar
                     .when(self.ssh_creating_group, |el| {
                         el.child(
                             div()
-                                .p_2p5()
-                                .rounded_md()
-                                .bg(rgb(0x2a2f3a))
+                                .p_2()
+                                .rounded_lg()
+                                .bg(rgb(0x232833))
                                 .border_1()
-                                .border_color(rgb(0x454d5e))
+                                .border_color(rgb(0x364052))
                                 .flex()
                                 .flex_row()
                                 .items_center()
                                 .gap_2()
                                 .child(
                                     div()
-                                        .flex_1()
-                                        .h(px(30.0))
-                                        .px_2p5()
-                                        .rounded_sm()
-                                        .bg(rgb(0x363c49))
-                                        .flex()
-                                        .items_center()
-                                        .child(self.ssh_group_input.clone()),
+                                        .flex_none()
+                                        .pl_1()
+                                        .text_xs()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(rgb(0xe5e7eb))
+                                        .child("Group name"),
                                 )
+                                .child(div().flex_1().child(settings_text_box(
+                                    self.ssh_group_input.clone(),
+                                )))
                                 .child(
                                     div()
                                         .id("ssh-confirm-group")
+                                        .flex_none()
                                         .px_3()
                                         .py_1()
-                                        .rounded_sm()
+                                        .rounded_md()
                                         .bg(rgb(0x2563eb))
                                         .hover(|s| s.bg(rgb(0x3b82f6)))
                                         .cursor_pointer()
@@ -9787,245 +9829,360 @@ impl LaralahApp {
                         )
                     }),
             ))
-            // Scrollable connections & groups list
-            .child(centered_scroll(
+            // Scrollable connections & groups
+            .child(centered_scroll_w(
                 "ssh-connections-scroll",
+                CONNECTIONS_LIST_MAX_W,
                 div()
-                    .px_5()
-                    .py_3p5()
+                    .px_6()
+                    .pt_5()
+                    .pb_8()
                     .flex()
                     .flex_col()
-                    .gap_4()
-                    .when(self.ssh_store.connections.is_empty(), |el| {
+                    .gap_6()
+                    .when(no_connections, |el| {
+                        el.child(
+                            div()
+                                .mt_8()
+                                .py_10()
+                                .px_6()
+                                .rounded_xl()
+                                .border_1()
+                                .border_color(rgb(0x2d3441))
+                                .bg(rgb(0x20242d))
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    svg()
+                                        .path("icons/server.svg")
+                                        .size(px(28.0))
+                                        .text_color(rgb(0x60a5fa)),
+                                )
+                                .child(
+                                    div()
+                                        .mt_1()
+                                        .text_sm()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(rgb(0xf3f4f6))
+                                        .child("No connections yet"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(0x94a3b8))
+                                        .child("Add an SSH server or a Docker container on this Mac to run Tinker against it."),
+                                ),
+                        )
+                    })
+                    .when(no_matches, |el| {
                         el.child(
                             div()
                                 .py_8()
                                 .flex()
-                                .items_center()
                                 .justify_center()
                                 .text_xs()
-                                .text_color(rgb(0x9ca3af))
-                                .child("No SSH connections yet — click '+ Connection' above to add a server."),
+                                .text_color(rgb(0x94a3b8))
+                                .child(format!("No connections match “{query_raw}”.")),
                         )
                     })
-                    .children(sections.into_iter().map(|(grp_opt, conns)| {
-                        let grp_title = grp_opt.unwrap_or_else(|| "Connections".to_string());
+                    .children(sections.into_iter().filter(|(_, c)| !(no_matches && c.is_empty())).map(|(grp_opt, conns)| {
+                        let count = conns.len();
+                        let title = match grp_opt {
+                            Some(g) if !g.is_empty() => g,
+                            Some(_) => "Ungrouped".to_string(),
+                            None => "Connections".to_string(),
+                        };
+                        let cards: Vec<gpui::AnyElement> = conns
+                            .into_iter()
+                            .map(|prof| {
+                                let connected = active_ssh_id.as_deref() == Some(prof.id.as_str());
+                                self.render_connection_card(prof, connected, cx)
+                            })
+                            .collect();
                         div()
                             .flex()
                             .flex_col()
-                            .gap_2()
+                            .gap_2p5()
                             .child(
                                 div()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(rgb(0x9ca3af))
-                                    .child(grp_title),
-                            )
-                            .when(conns.is_empty(), |el| {
-                                el.child(
-                                    div()
-                                        .px_3()
-                                        .py_2()
-                                        .rounded_md()
-                                        .bg(rgb(0x282c36))
-                                        .text_xs()
-                                        .text_color(rgb(0x6b7280))
-                                        .child("Empty group"),
-                                )
-                            })
-                            .children(conns.into_iter().map(|prof| {
-                                let is_connected = active_ssh_id == Some(prof.id.as_str());
-                                let prof_for_connect = prof.clone();
-                                let prof_id_edit = prof.id.clone();
-                                let prof_id_del = prof.id.clone();
-                                let docker_opt =
-                                    prof.active_docker_container().map(str::to_string);
-                                let subtitle = match docker_opt.as_deref() {
-                                    Some(c) if prof.is_local_docker() => format!(
-                                        "local docker: {} · {}",
-                                        c, prof.application_folder
-                                    ),
-                                    Some(c) => format!(
-                                        "{}@{}:{} · docker: {} · {}",
-                                        prof.username,
-                                        prof.host,
-                                        prof.port,
-                                        c,
-                                        prof.application_folder
-                                    ),
-                                    None => format!(
-                                        "{}@{}:{} · {}",
-                                        prof.username,
-                                        prof.host,
-                                        prof.port,
-                                        prof.application_folder
-                                    ),
-                                };
-
-                                div()
-                                    .id(SharedString::from(format!("ssh-row-{}", prof.id)))
-                                    .px_3p5()
-                                    .py_2p5()
-                                    .rounded_md()
-                                    .bg(if is_connected {
-                                        rgb(0x2d3342)
-                                    } else {
-                                        rgb(0x292e39)
-                                    })
-                                    .border_1()
-                                    .border_color(if is_connected {
-                                        rgb(prof.color_hex)
-                                    } else {
-                                        rgb(0x394050)
-                                    })
-                                    .hover(|s| s.bg(rgb(0x323846)))
                                     .flex()
                                     .flex_row()
                                     .items_center()
-                                    .justify_between()
-                                    .gap_3()
+                                    .gap_2()
                                     .child(
                                         div()
-                                            .flex_1()
-                                            .overflow_hidden()
-                                            .flex()
-                                            .flex_row()
-                                            .items_center()
-                                            .gap_3()
-                                            .child(
-                                                div()
-                                                    .size(px(10.0))
-                                                    .flex_none()
-                                                    .rounded_full()
-                                                    .bg(rgb(prof.color_hex)),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .overflow_hidden()
-                                                    .flex()
-                                                    .flex_col()
-                                                    .gap_0p5()
-                                                    .child(
-                                                        div()
-                                                            .flex()
-                                                            .flex_row()
-                                                            .items_center()
-                                                            .gap_2()
-                                                            .child(
-                                                                div()
-                                                                    .text_xs()
-                                                                    .font_weight(
-                                                                        gpui::FontWeight::SEMIBOLD,
-                                                                    )
-                                                                    .text_color(rgb(0xf3f4f6))
-                                                                    .child(prof.label.clone()),
-                                                            )
-                                                            .when(docker_opt.is_some(), |el| {
-                                                                el.child(
-                                                                    div()
-                                                                        .px_1p5()
-                                                                        .py_0p5()
-                                                                        .rounded_sm()
-                                                                        .bg(rgb(0x1e3a5f))
-                                                                        .border_1()
-                                                                        .border_color(rgb(0x2563eb))
-                                                                        .text_xs()
-                                                                        .text_color(rgb(0x93c5fd))
-                                                                        .child("Docker"),
-                                                                )
-                                                            })
-                                                            .when(is_connected, |el| {
-                                                                el.child(
-                                                                    div()
-                                                                        .px_1p5()
-                                                                        .py_0p5()
-                                                                        .rounded_sm()
-                                                                        .bg(rgb(0x14532d))
-                                                                        .text_xs()
-                                                                        .text_color(rgb(0x86efac))
-                                                                        .child("Connected"),
-                                                                )
-                                                            }),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .truncate()
-                                                            .font_family("Menlo")
-                                                            .text_xs()
-                                                            .text_color(rgb(0x9ca3af))
-                                                            .child(subtitle),
-                                                    ),
-                                            ),
+                                            .text_xs()
+                                            .font_weight(gpui::FontWeight::BOLD)
+                                            .text_color(rgb(0xcbd5e1))
+                                            .child(title.to_uppercase()),
                                     )
                                     .child(
                                         div()
-                                            .flex_none()
-                                            .flex()
-                                            .flex_row()
-                                            .items_center()
-                                            .gap_1p5()
-                                            .child(if is_connected {
-                                                settings_action_btn(
-                                                    &format!("ssh-disc-{}", prof.id),
-                                                    "Disconnect",
-                                                    cx.listener(|this, _, _, cx| {
-                                                        this.disconnect_ssh(cx);
-                                                    }),
-                                                )
-                                            } else {
-                                                div()
-                                                    .id(SharedString::from(format!(
-                                                        "ssh-conn-{}",
-                                                        prof.id
-                                                    )))
-                                                    .px_3()
-                                                    .py_1()
-                                                    .rounded_sm()
-                                                    .bg(rgb(0x2563eb))
-                                                    .hover(|s| s.bg(rgb(0x3b82f6)))
-                                                    .cursor_pointer()
-                                                    .text_xs()
-                                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                    .text_color(fixed_rgb(0xffffff))
-                                                    .on_click(cx.listener(
-                                                        move |this, _, window, cx| {
-                                                            this.connect_ssh_profile(
-                                                                &prof_for_connect,
-                                                                window,
-                                                                cx,
-                                                            );
-                                                        },
-                                                    ))
-                                                    .child("Connect")
-                                                    .into_any_element()
-                                            })
-                                            .child(settings_action_btn(
-                                                &format!("ssh-edit-{}", prof.id),
-                                                "Edit",
-                                                cx.listener(move |this, _, window, cx| {
-                                                    this.start_edit_ssh_connection(
-                                                        &prof_id_edit,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                }),
-                                            ))
-                                            .child(settings_action_btn(
-                                                &format!("ssh-del-{}", prof.id),
-                                                "×",
-                                                cx.listener(move |this, _, _, cx| {
-                                                    this.delete_ssh_profile(&prof_id_del, cx);
-                                                }),
-                                            )),
+                                            .px_1p5()
+                                            .rounded_full()
+                                            .bg(rgb(0x2a313e))
+                                            .text_xs()
+                                            .text_color(rgb(0x94a3b8))
+                                            .child(count.to_string()),
                                     )
-                            }))
+                                    .child(div().flex_1().h(px(1.0)).bg(rgb(0x2a313e))),
+                            )
+                            .when(count == 0, |el| {
+                                el.child(
+                                    div()
+                                        .px_3()
+                                        .py_3()
+                                        .rounded_lg()
+                                        .border_1()
+                                        .border_color(rgb(0x2d3441))
+                                        .text_xs()
+                                        .text_color(rgb(0x7c8799))
+                                        .child("Empty group. Pick it under Group when you edit a connection."),
+                                )
+                            })
+                            .when(count > 0, |el| {
+                                el.child(div().grid().grid_cols(cols).gap_3().children(cards))
+                            })
                     })),
             ))
     }
 
+    /// One saved connection as a card: name, type, where it points, and actions.
+    /// Double-click anywhere on the card connects.
+    fn render_connection_card(
+        &self,
+        prof: SshConnectionProfile,
+        is_connected: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let prof_for_connect = prof.clone();
+        let prof_for_dbl = prof.clone();
+        let prof_id_edit = prof.id.clone();
+        let prof_id_del = prof.id.clone();
+        let container = prof.active_docker_container().map(str::to_string);
+        let is_local = prof.is_local_docker();
+
+        let (kind_label, kind_docker) = match (is_local, container.is_some()) {
+            (true, _) => ("Local Docker", true),
+            (false, true) => ("SSH · Docker", true),
+            (false, false) => ("SSH", false),
+        };
+        let endpoint = if is_local {
+            "This Mac".to_string()
+        } else if prof.port == 22 {
+            format!("{}@{}", prof.username, prof.host)
+        } else {
+            format!("{}@{}:{}", prof.username, prof.host, prof.port)
+        };
+
+        let detail_row = |icon: &'static str, text: String| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .overflow_hidden()
+                .child(
+                    svg()
+                        .path(icon)
+                        .flex_none()
+                        .size(px(12.0))
+                        .text_color(rgb(0x7c8799)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .truncate()
+                        .font_family("Menlo")
+                        .text_xs()
+                        .text_color(rgb(0xaab3c2))
+                        .child(text),
+                )
+        };
+
+        let chip = |text: &'static str, bg: u32, border: u32, fg: u32| {
+            div()
+                .flex_none()
+                .px_1p5()
+                .rounded_sm()
+                .bg(rgb(bg))
+                .border_1()
+                .border_color(rgb(border))
+                .text_xs()
+                .text_color(rgb(fg))
+                .child(text)
+        };
+
+        let primary_btn = if is_connected {
+            settings_action_btn(
+                &format!("ssh-disc-{}", prof.id),
+                "Disconnect",
+                cx.listener(|this, _, _, cx| {
+                    this.disconnect_ssh(cx);
+                }),
+            )
+        } else {
+            div()
+                .id(SharedString::from(format!("ssh-conn-{}", prof.id)))
+                .flex_none()
+                .px_3()
+                .py_1()
+                .rounded_md()
+                .bg(rgb(0x2563eb))
+                .hover(|s| s.bg(rgb(0x3b82f6)))
+                .cursor_pointer()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1p5()
+                .text_xs()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(fixed_rgb(0xffffff))
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.connect_ssh_profile(&prof_for_connect, window, cx);
+                }))
+                .child(
+                    svg()
+                        .path("icons/play.svg")
+                        .size(px(11.0))
+                        .text_color(fixed_rgb(0xffffff)),
+                )
+                .child("Connect")
+                .into_any_element()
+        };
+
+        div()
+            .id(SharedString::from(format!("ssh-row-{}", prof.id)))
+            .rounded_lg()
+            .overflow_hidden()
+            .bg(if is_connected { rgb(0x262c39) } else { rgb(0x22262f) })
+            .border_1()
+            .border_color(if is_connected {
+                rgb(prof.color_hex)
+            } else {
+                rgb(0x323947)
+            })
+            .hover(|s| s.bg(rgb(0x282e3a)).border_color(rgb(0x435069)))
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
+                if ev.click_count() >= 2 && !is_connected {
+                    this.connect_ssh_profile(&prof_for_dbl, window, cx);
+                }
+            }))
+            .flex()
+            .flex_row()
+            // Color stripe
+            .child(div().w(px(4.0)).flex_none().bg(rgb(prof.color_hex)))
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .px_3p5()
+                    .pt_3()
+                    .pb_2p5()
+                    .flex()
+                    .flex_col()
+                    .gap_2p5()
+                    // Title row
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .truncate()
+                                    .text_sm()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(rgb(0xf3f4f6))
+                                    .child(prof.label.clone()),
+                            )
+                            .when(is_connected, |el| {
+                                el.child(chip("● Connected", 0x14532d, 0x166534, 0x86efac))
+                            })
+                            .child(if kind_docker {
+                                chip(kind_label, 0x1e3a5f, 0x1d4ed8, 0x93c5fd)
+                            } else {
+                                chip(kind_label, 0x2a313e, 0x3b4558, 0xcbd5e1)
+                            }),
+                    )
+                    // Details
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(detail_row(
+                                if is_local { "icons/home.svg" } else { "icons/server.svg" },
+                                endpoint,
+                            ))
+                            .when_some(container, |el, c| {
+                                el.child(detail_row("icons/layers.svg", c))
+                            })
+                            .child(detail_row(
+                                "icons/folder.svg",
+                                prof.application_folder.clone(),
+                            )),
+                    )
+                    // Spacer keeps the action row at the bottom when cards in a row differ.
+                    .child(div().flex_1())
+                    // Actions
+                    .child(
+                        div()
+                            .pt_2()
+                            .border_t_1()
+                            .border_color(rgb(0x2d3441))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1p5()
+                            .child(primary_btn)
+                            .child(div().flex_1())
+                            .child(settings_action_btn(
+                                &format!("ssh-edit-{}", prof.id),
+                                "Edit",
+                                cx.listener(move |this, _, window, cx| {
+                                    this.start_edit_ssh_connection(&prof_id_edit, window, cx);
+                                }),
+                            ))
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("ssh-del-{}", prof.id)))
+                                    .flex_none()
+                                    .p_1p5()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(rgb(0x424e63))
+                                    .bg(rgb(0x262d3b))
+                                    .hover(|s| s.bg(rgb(0x4a1d1d)).border_color(rgb(0xb91c1c)))
+                                    .cursor_pointer()
+                                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.delete_ssh_profile(&prof_id_del, cx);
+                                    }))
+                                    .child(
+                                        svg()
+                                            .path("icons/trash.svg")
+                                            .size(px(12.0))
+                                            .text_color(rgb(0xcbd5e1)),
+                                    ),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
     /// Local Docker container picker: the search box only filters; a row click is the choice.
-    fn render_local_docker_picker(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_local_docker_picker(&self, cols: u16, cx: &mut Context<Self>) -> gpui::AnyElement {
         let selected = self
             .ssh_docker_container_input
             .read(cx)
@@ -10075,6 +10232,7 @@ impl LaralahApp {
 
         let status_line = |text: String, color: u32| {
             div()
+                .col_span_full()
                 .px_3()
                 .py_3()
                 .text_xs()
@@ -10090,7 +10248,10 @@ impl LaralahApp {
             list_children.push(Self::local_docker_row(
                 "local-docker-opt-saved",
                 &selected,
-                "Not running right now · start it, then press Refresh".to_string(),
+                vec![(
+                    "icons/clock.svg",
+                    "Not running right now. Start it, then press Refresh.".to_string(),
+                )],
                 true,
                 None,
                 cx,
@@ -10126,7 +10287,11 @@ impl LaralahApp {
             } else {
                 ctr.name.clone()
             };
-            let meta = format!("{} · {} · {}", ctr.id, ctr.image, ctr.workdir);
+            // The workdir only pre-fills "Folder in container"; it is shown there, not here.
+            let meta = vec![
+                ("icons/layers.svg", ctr.image.clone()),
+                ("icons/code.svg", ctr.id.clone()),
+            ];
             list_children.push(Self::local_docker_row(
                 &format!("local-docker-opt-{}", ctr.id),
                 &name,
@@ -10142,6 +10307,7 @@ impl LaralahApp {
             list_children.push(
                 div()
                     .id("local-docker-use-typed")
+                    .col_span_full()
                     .px_3()
                     .py_2()
                     .rounded_md()
@@ -10188,19 +10354,10 @@ impl LaralahApp {
                     .items_end()
                     .justify_between()
                     .gap_3()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_0p5()
-                            .child(ssh_field_label("Container"))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(0x94a3b8))
-                                    .child("Pick a running container. PHP runs inside it with docker exec, no SSH."),
-                            ),
-                    )
+                    .child(div().flex_1().child(form_section_header(
+                        "Container",
+                        "Pick a running container on this Mac. Its working directory fills the folder below.",
+                    )))
                     .child(settings_action_btn(
                         "local-docker-refresh",
                         if fetching { "Refreshing…" } else { "Refresh" },
@@ -10251,23 +10408,23 @@ impl LaralahApp {
                             .id("local-docker-list")
                             // Nested in the scrolling dialog: keep the wheel for this list only.
                             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                            .max_h(px(232.0))
+                            .max_h(px(360.0))
                             .overflow_y_scroll()
-                            .p_1()
-                            .flex()
-                            .flex_col()
-                            .gap_0p5()
+                            .p_2()
+                            .grid()
+                            .grid_cols(cols)
+                            .gap_2()
                             .children(list_children),
                     ),
             )
             .into_any_element()
     }
 
-    /// One selectable container row: radio dot, name, and `id · image · workdir`.
+    /// One selectable container tile: name, then image / workdir / ID lines.
     fn local_docker_row(
         id: &str,
         name: &str,
-        meta: String,
+        meta: Vec<(&'static str, String)>,
         selected: bool,
         workdir: Option<String>,
         cx: &mut Context<Self>,
@@ -10275,43 +10432,31 @@ impl LaralahApp {
         let chosen_name = name.to_string();
         div()
             .id(SharedString::from(id.to_string()))
-            .px_2p5()
-            .py_2()
-            .rounded_md()
+            .min_w_0()
+            .px_3()
+            .py_2p5()
+            .rounded_lg()
             .border_1()
             .cursor_pointer()
-            .when(selected, |el| el.bg(rgb(0x1e3a5f)).border_color(rgb(0x2563eb)))
+            .when(selected, |el| el.bg(rgb(0x1a2a44)).border_color(rgb(0x2563eb)))
             .when(!selected, |el| {
-                el.border_color(gpui::transparent_black())
-                    .hover(|s| s.bg(rgb(0x263042)))
+                el.bg(rgb(0x20242d))
+                    .border_color(rgb(0x2d3441))
+                    .hover(|s| s.bg(rgb(0x263042)).border_color(rgb(0x435069)))
             })
             .flex()
-            .flex_row()
-            .items_center()
-            .gap_2p5()
+            .flex_col()
+            .gap_1p5()
             .child(
                 div()
-                    .size(px(14.0))
-                    .flex_none()
-                    .rounded_full()
-                    .border_1()
-                    .border_color(if selected { rgb(0x2563eb) } else { rgb(0x64748b) })
                     .flex()
+                    .flex_row()
                     .items_center()
-                    .justify_center()
-                    .when(selected, |el| {
-                        el.child(div().size(px(6.0)).rounded_full().bg(rgb(0x2563eb)))
-                    }),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .overflow_hidden()
-                    .flex()
-                    .flex_col()
-                    .gap_0p5()
+                    .gap_2()
                     .child(
                         div()
+                            .flex_1()
+                            .truncate()
                             .text_xs()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(0xf1f5f9))
@@ -10319,27 +10464,43 @@ impl LaralahApp {
                     )
                     .child(
                         div()
+                            .flex_none()
+                            .size(px(16.0))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(if selected { rgb(0x2563eb) } else { rgb(0x4b5568) })
+                            .when(selected, |el| el.bg(rgb(0x2563eb)))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(selected, |el| {
+                                el.child(
+                                    svg()
+                                        .path("icons/check.svg")
+                                        .size(px(10.0))
+                                        .text_color(fixed_rgb(0xffffff)),
+                                )
+                            }),
+                    ),
+            )
+            .children(meta.into_iter().map(|(icon, text)| {
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .overflow_hidden()
+                    .child(svg().path(icon).flex_none().size(px(11.0)).text_color(rgb(0x7c8799)))
+                    .child(
+                        div()
+                            .flex_1()
                             .truncate()
                             .font_family("Menlo")
                             .text_xs()
                             .text_color(rgb(0x94a3b8))
-                            .child(meta),
-                    ),
-            )
-            .when(selected, |el| {
-                el.child(
-                    div()
-                        .flex_none()
-                        .px_1p5()
-                        .py_0p5()
-                        .rounded_sm()
-                        .bg(rgb(0x2563eb))
-                        .text_xs()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(fixed_rgb(0xffffff))
-                        .child("Selected"),
-                )
-            })
+                            .child(text),
+                    )
+            }))
             .on_click(cx.listener(move |this, _, _, cx| {
                 let name = chosen_name.clone();
                 this.ssh_docker_container_input
@@ -10347,13 +10508,242 @@ impl LaralahApp {
                 if let Some(dir) = workdir.clone().filter(|d| d.starts_with('/')) {
                     this.ssh_folder_input.update(cx, |tf, cx| tf.set_text(dir, cx));
                 }
+                if this.ssh_label_input.read(cx).text().trim().is_empty() {
+                    let label = chosen_name.clone();
+                    this.ssh_label_input.update(cx, |tf, cx| tf.set_text(label, cx));
+                }
                 this.ssh_form_error = None;
                 cx.notify();
             }))
             .into_any_element()
     }
 
-    fn render_ssh_form_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Connection type as two selectable cards with an icon and a short explanation.
+    fn render_connection_type_cards(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let options = [
+            (
+                ConnectionKind::Ssh,
+                "icons/server.svg",
+                "SSH server",
+                "A remote server over SSH. Can also run inside a Docker container on that server.",
+            ),
+            (
+                ConnectionKind::LocalDocker,
+                "icons/layers.svg",
+                "Local Docker",
+                "A running container on this Mac. Runs with docker exec, no SSH needed.",
+            ),
+        ];
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(form_section_header("Type", "How Laralah reaches PHP."))
+            .children(options.into_iter().map(|(kind, icon, title, desc)| {
+                let selected = self.ssh_form_kind == kind;
+                div()
+                    .id(SharedString::from(format!("ssh-form-kind-{kind:?}")))
+                    .p_3()
+                    .rounded_lg()
+                    .border_1()
+                    .cursor_pointer()
+                    .when(selected, |el| el.bg(rgb(0x1a2a44)).border_color(rgb(0x2563eb)))
+                    .when(!selected, |el| {
+                        el.bg(rgb(0x20242d))
+                            .border_color(rgb(0x323947))
+                            .hover(|s| s.bg(rgb(0x262c38)).border_color(rgb(0x435069)))
+                    })
+                    .flex()
+                    .flex_row()
+                    .items_start()
+                    .gap_3()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_ssh_form_kind(kind, window, cx);
+                    }))
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(30.0))
+                            .rounded_md()
+                            .bg(if selected { rgb(0x2563eb) } else { rgb(0x2a313e) })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(svg().path(icon).size(px(15.0)).text_color(if selected {
+                                fixed_rgb(0xffffff)
+                            } else {
+                                rgb(0xcbd5e1)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .text_color(rgb(0xf3f4f6))
+                                            .child(title),
+                                    )
+                                    .when(selected, |el| {
+                                        el.child(
+                                            svg()
+                                                .path("icons/check.svg")
+                                                .size(px(13.0))
+                                                .text_color(rgb(0x60a5fa)),
+                                        )
+                                    }),
+                            )
+                            .child(div().text_xs().text_color(rgb(0x94a3b8)).child(desc)),
+                    )
+            }))
+            .into_any_element()
+    }
+
+    /// Read-only card built from the form as it is now, matching the list's cards.
+    fn render_connection_form_preview(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let text = |e: &Entity<TextField>, cx: &mut Context<Self>| e.read(cx).text().trim().to_string();
+        let label = text(&self.ssh_label_input, cx);
+        let host = text(&self.ssh_host_input, cx);
+        let user = text(&self.ssh_user_input, cx);
+        let port = text(&self.ssh_port_input, cx);
+        let folder = text(&self.ssh_folder_input, cx);
+        let container = text(&self.ssh_docker_container_input, cx);
+        let is_local = self.ssh_form_kind == ConnectionKind::LocalDocker;
+        let container = (is_local || self.ssh_form_docker_enabled)
+            .then_some(container)
+            .filter(|c| !c.is_empty());
+        let (kind_label, kind_docker) = match (is_local, self.ssh_form_docker_enabled) {
+            (true, _) => ("Local Docker", true),
+            (false, true) => ("SSH · Docker", true),
+            (false, false) => ("SSH", false),
+        };
+        let endpoint = if is_local {
+            "This Mac".to_string()
+        } else if host.is_empty() {
+            "user@host".to_string()
+        } else {
+            let user_part = if user.is_empty() { String::new() } else { format!("{user}@") };
+            match port.as_str() {
+                "" | "22" => format!("{user_part}{host}"),
+                p => format!("{user_part}{host}:{p}"),
+            }
+        };
+        let color = self.ssh_form_color_hex;
+        let line = |icon: &'static str, value: String, placeholder: bool| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .overflow_hidden()
+                .child(svg().path(icon).flex_none().size(px(12.0)).text_color(rgb(0x7c8799)))
+                .child(
+                    div()
+                        .flex_1()
+                        .truncate()
+                        .font_family("Menlo")
+                        .text_xs()
+                        .text_color(if placeholder { rgb(0x64748b) } else { rgb(0xaab3c2) })
+                        .child(value),
+                )
+        };
+        let label_empty = label.is_empty();
+        let folder_empty = folder.is_empty();
+        let host_placeholder = !is_local && host.is_empty();
+        div()
+            .rounded_lg()
+            .overflow_hidden()
+            .bg(rgb(0x22262f))
+            .border_1()
+            .border_color(rgb(0x323947))
+            .flex()
+            .flex_row()
+            .child(div().w(px(4.0)).flex_none().bg(rgb(color)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .px_3p5()
+                    .py_3()
+                    .flex()
+                    .flex_col()
+                    .gap_2p5()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .truncate()
+                                    .text_sm()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(if label_empty { rgb(0x64748b) } else { rgb(0xf3f4f6) })
+                                    .child(if label_empty { "Untitled connection".to_string() } else { label }),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .px_1p5()
+                                    .rounded_sm()
+                                    .border_1()
+                                    .text_xs()
+                                    .when(kind_docker, |el| {
+                                        el.bg(rgb(0x1e3a5f)).border_color(rgb(0x1d4ed8)).text_color(rgb(0x93c5fd))
+                                    })
+                                    .when(!kind_docker, |el| {
+                                        el.bg(rgb(0x2a313e)).border_color(rgb(0x3b4558)).text_color(rgb(0xcbd5e1))
+                                    })
+                                    .child(kind_label),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(line(
+                                if is_local { "icons/home.svg" } else { "icons/server.svg" },
+                                endpoint,
+                                host_placeholder,
+                            ))
+                            .when(is_local || self.ssh_form_docker_enabled, |el| {
+                                let empty = container.is_none();
+                                el.child(line(
+                                    "icons/layers.svg",
+                                    container.unwrap_or_else(|| "no container picked".to_string()),
+                                    empty,
+                                ))
+                            })
+                            .child(line(
+                                "icons/folder.svg",
+                                if folder_empty { "/path/to/app".to_string() } else { folder },
+                                folder_empty,
+                            )),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_ssh_form_view(&self, viewport_w: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        let two_col = viewport_w >= 980.0;
+        let fields_w = viewport_w.min(CONNECTIONS_LIST_MAX_W)
+            - 48.0
+            - if two_col { FORM_SIDE_W + 32.0 } else { 0.0 };
+        let picker_cols: u16 = if fields_w >= 560.0 { 2 } else { 1 };
         let form_title = if self.ssh_editing_id.is_some() {
             "Edit Connection"
         } else {
@@ -10362,7 +10752,7 @@ impl LaralahApp {
         let local_path_text = self
             .ssh_form_local_path
             .as_deref()
-            .unwrap_or("–")
+            .unwrap_or("Not set")
             .to_string();
         let secret_label = match self.ssh_form_auth_method {
             SshAuthMethod::Password => "Password",
@@ -10382,10 +10772,11 @@ impl LaralahApp {
             .flex()
             .flex_col()
             // Top bar matching screenshots 2 & 3 (`New Connection` | `[ Save & Connect ]` `[ Save ]`)
-            .child(centered_band(
+            .child(centered_band_w(
+                CONNECTIONS_LIST_MAX_W,
                 0x323842,
                 div()
-                    .px_5()
+                    .px_6()
                     .py_3p5()
                     .flex()
                     .flex_row()
@@ -10467,12 +10858,464 @@ impl LaralahApp {
                             ),
                     ),
             ))
-            // Scrollable form body
-            .child(centered_scroll(
+            // Scrollable form body: type, preview and appearance on the left, fields on the right
+            .child(centered_scroll_w(
                 "ssh-form-scroll",
+                CONNECTIONS_LIST_MAX_W,
                 div()
-                    .px_5()
-                    .py_4()
+                    .px_6()
+                    .py_5()
+                    .flex()
+                    .gap_8()
+                    .when(two_col, |el| el.flex_row().items_start())
+                    .when(!two_col, |el| el.flex_col())
+                    .child(
+                        div()
+                            .flex_none()
+                            .when(two_col, |el| el.w(px(FORM_SIDE_W)))
+                            .flex()
+                            .flex_col()
+                            .gap_3p5()
+                            .child(self.render_connection_type_cards(cx))
+                            .child(form_section_header(
+                                "Preview",
+                                "How it will look in your connections list.",
+                            ))
+                            .child(self.render_connection_form_preview(cx))
+                            .child(form_section_header(
+                                "Appearance",
+                                "Color and group help you tell connections apart.",
+                            ))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_3p5()
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(ssh_field_label("Color"))
+                                    .child(
+                                        div()
+                                            .h(px(36.0))
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap_2p5()
+                                            .children(SSH_COLOR_SWATCHES.iter().map(
+                                                |(hex, name)| {
+                                                    let c = *hex;
+                                                    let selected = self.ssh_form_color_hex == c;
+                                                    div()
+                                                        .id(SharedString::from(format!(
+                                                            "ssh-swatch-{name}"
+                                                        )))
+                                                        .size(px(22.0))
+                                                        .rounded_full()
+                                                        .bg(rgb(c))
+                                                        .cursor_pointer()
+                                                        .when(selected, |d| {
+                                                            d.border_2()
+                                                                .border_color(rgb(0xffffff))
+                                                        })
+                                                        .on_click(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                this.ssh_form_color_hex = c;
+                                                                cx.notify();
+                                                            },
+                                                        ))
+                                                },
+                                            )),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1p5()
+                                    .child(ssh_field_label("Group"))
+                                    .child({
+                                        let id_shared =
+                                            SharedString::from("ssh-form-group-select");
+                                        let id_toggle = id_shared.clone();
+                                        let is_open =
+                                            self.active_dropdown_id.as_ref() == Some(&id_shared);
+                                        let filter_raw =
+                                            self.ssh_group_combo_input.read(cx).text().trim().to_string();
+                                        let filter_lc = filter_raw.to_lowercase();
+
+                                        let mut group_names: Vec<String> =
+                                            self.ssh_store.groups.clone();
+                                        if let Some(ref current_grp) = self.ssh_form_group
+                                            && !group_names.contains(current_grp)
+                                        {
+                                            group_names.push(current_grp.clone());
+                                        }
+
+                                        let exact_exists = group_names
+                                            .iter()
+                                            .any(|g| g.eq_ignore_ascii_case(&filter_raw));
+                                        let filtered_groups: Vec<String> = group_names
+                                            .into_iter()
+                                            .filter(|g| {
+                                                filter_lc.is_empty()
+                                                    || g.to_lowercase().contains(&filter_lc)
+                                            })
+                                            .collect();
+                                        let show_none = filter_lc.is_empty()
+                                            || "none (ungrouped)".contains(&filter_lc);
+
+                                        div()
+                                            .relative()
+                                            .w_full()
+                                            .child(
+                                                div()
+                                                    .id(id_shared)
+                                                    .w_full()
+                                                    .h(px(36.0))
+                                                    .px_3()
+                                                    .rounded_lg()
+                                                    .bg(rgb(0x181c23))
+                                                    .border_1()
+                                                    .border_color(if is_open {
+                                                        rgb(0x3b82f6)
+                                                    } else {
+                                                        rgb(0x364052)
+                                                    })
+                                                    .hover(move |s| {
+                                                        s.bg(rgb(0x1f2530)).border_color(if is_open
+                                                        {
+                                                            rgb(0x3b82f6)
+                                                        } else {
+                                                            rgb(0x4b5870)
+                                                        })
+                                                    })
+                                                    .cursor_pointer()
+                                                    .overflow_hidden()
+                                                    .flex()
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .justify_between()
+                                                    .gap_2()
+                                                    .on_mouse_down(
+                                                        gpui::MouseButton::Left,
+                                                        |_, _, cx| {
+                                                            cx.stop_propagation();
+                                                        },
+                                                    )
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            cx.stop_propagation();
+                                                            if this.active_dropdown_id.as_ref()
+                                                                == Some(&id_toggle)
+                                                            {
+                                                                this.active_dropdown_id = None;
+                                                            } else {
+                                                                this.ssh_group_combo_input.update(
+                                                                    cx,
+                                                                    |tf, cx| tf.set_text("", cx),
+                                                                );
+                                                                this.active_dropdown_id =
+                                                                    Some(id_toggle.clone());
+                                                                let fh = this
+                                                                    .ssh_group_combo_input
+                                                                    .focus_handle(cx);
+                                                                window.focus(&fh);
+                                                            }
+                                                            cx.notify();
+                                                        },
+                                                    ))
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .truncate()
+                                                            .text_xs()
+                                                            .text_color(rgb(0xf1f5f9))
+                                                            .child(group_label.clone()),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .flex_none()
+                                                            .text_xs()
+                                                            .text_color(if is_open {
+                                                                rgb(0x60a5fa)
+                                                            } else {
+                                                                rgb(0x94a3b8)
+                                                            })
+                                                            .child(if is_open { "▴" } else { "▾" }),
+                                                    ),
+                                            )
+                                            .when(is_open, |el| {
+                                                let combo_in = self.ssh_group_combo_input.clone();
+                                                let combo_click = combo_in.clone();
+                                                let is_none_sel = self.ssh_form_group.is_none();
+                                                let create_name = filter_raw.clone();
+                                                let can_create =
+                                                    !create_name.is_empty() && !exact_exists;
+
+                                                let menu = div()
+                                                    .id("ssh-form-group-select-menu")
+                                                    .occlude()
+                                                    .absolute()
+                                                    .left_0()
+                                                    .right_0()
+                                                    .bottom(px(40.0))
+                                                    .rounded_lg()
+                                                    .bg(rgb(0x1e2430))
+                                                    .border_1()
+                                                    .border_color(rgb(0x3b4963))
+                                                    .shadow_lg()
+                                                    .p_1p5()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap_1()
+                                                    .on_mouse_down(
+                                                        gpui::MouseButton::Left,
+                                                        |_, _, cx| {
+                                                            cx.stop_propagation();
+                                                        },
+                                                    )
+                                                    .on_click(|_, _, cx| {
+                                                        cx.stop_propagation();
+                                                    })
+                                                    .on_scroll_wheel(|_, _, cx| {
+                                                        cx.stop_propagation();
+                                                    })
+                                                    .child(
+                                                        div()
+                                                            .h(px(30.0))
+                                                            .px_2p5()
+                                                            .rounded_md()
+                                                            .bg(rgb(0x141820))
+                                                            .border_1()
+                                                            .border_color(rgb(0x334155))
+                                                            .cursor(gpui::CursorStyle::IBeam)
+                                                            .on_mouse_down(
+                                                                gpui::MouseButton::Left,
+                                                                move |ev, window, cx| {
+                                                                    cx.stop_propagation();
+                                                                    combo_click.update(
+                                                                        cx,
+                                                                        |tf, cx| {
+                                                                            tf.handle_mouse_down(
+                                                                                ev, window, cx,
+                                                                            );
+                                                                        },
+                                                                    );
+                                                                },
+                                                            )
+                                                            .flex()
+                                                            .items_center()
+                                                            .child(combo_in),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .id("ssh-group-combo-scroll")
+                                                            .max_h(px(176.0))
+                                                            .overflow_y_scroll()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .gap_0p5()
+                                                            .when(show_none, |list| {
+                                                                list.child(
+                                                                    div()
+                                                                        .id("ssh-grp-opt-none")
+                                                                        .px_2p5()
+                                                                        .py_1p5()
+                                                                        .rounded_md()
+                                                                        .when(is_none_sel, |r| {
+                                                                            r.bg(rgba(0x2563eb38))
+                                                                        })
+                                                                        .hover(|s| {
+                                                                            s.bg(rgb(0x2a3344))
+                                                                        })
+                                                                        .cursor_pointer()
+                                                                        .flex()
+                                                                        .flex_row()
+                                                                        .items_center()
+                                                                        .justify_between()
+                                                                        .on_click(cx.listener(
+                                                                            |this, _, _, cx| {
+                                                                                cx.stop_propagation();
+                                                                                this.ssh_form_group =
+                                                                                    None;
+                                                                                this.active_dropdown_id =
+                                                                                    None;
+                                                                                cx.notify();
+                                                                            },
+                                                                        ))
+                                                                        .child(
+                                                                            div()
+                                                                                .text_xs()
+                                                                                .text_color(
+                                                                                    rgb(0xe2e8f0),
+                                                                                )
+                                                                                .child(
+                                                                                    "None (Ungrouped)",
+                                                                                ),
+                                                                        )
+                                                                        .when(is_none_sel, |r| {
+                                                                            r.child(
+                                                                                div()
+                                                                                    .text_xs()
+                                                                                    .font_weight(
+                                                                                        gpui::FontWeight::BOLD,
+                                                                                    )
+                                                                                    .text_color(
+                                                                                        rgb(0x60a5fa),
+                                                                                    )
+                                                                                    .child("✓"),
+                                                                            )
+                                                                        }),
+                                                                )
+                                                            })
+                                                            .children(
+                                                                filtered_groups
+                                                                    .into_iter()
+                                                                    .enumerate()
+                                                                    .map(|(idx, grp)| {
+                                                                        let is_sel = self
+                                                                            .ssh_form_group
+                                                                            .as_deref()
+                                                                            == Some(grp.as_str());
+                                                                        let grp_set = grp.clone();
+                                                                        div()
+                                                                            .id(SharedString::from(
+                                                                                format!(
+                                                                                    "ssh-grp-opt-{idx}"
+                                                                                ),
+                                                                            ))
+                                                                            .px_2p5()
+                                                                            .py_1p5()
+                                                                            .rounded_md()
+                                                                            .when(is_sel, |r| {
+                                                                                r.bg(rgba(
+                                                                                    0x2563eb38,
+                                                                                ))
+                                                                            })
+                                                                            .hover(|s| {
+                                                                                s.bg(rgb(0x2a3344))
+                                                                            })
+                                                                            .cursor_pointer()
+                                                                            .flex()
+                                                                            .flex_row()
+                                                                            .items_center()
+                                                                            .justify_between()
+                                                                            .on_click(cx.listener(
+                                                                                move |this,
+                                                                                      _,
+                                                                                      _,
+                                                                                      cx| {
+                                                                                    cx.stop_propagation();
+                                                                                    this.ssh_form_group =
+                                                                                        Some(
+                                                                                            grp_set
+                                                                                                .clone(),
+                                                                                        );
+                                                                                    this.active_dropdown_id =
+                                                                                        None;
+                                                                                    cx.notify();
+                                                                                },
+                                                                            ))
+                                                                            .child(
+                                                                                div()
+                                                                                    .flex_1()
+                                                                                    .truncate()
+                                                                                    .text_xs()
+                                                                                    .font_weight(if is_sel {
+                                                                                        gpui::FontWeight::SEMIBOLD
+                                                                                    } else {
+                                                                                        gpui::FontWeight::NORMAL
+                                                                                    })
+                                                                                    .text_color(if is_sel {
+                                                                                        rgb(0xffffff)
+                                                                                    } else {
+                                                                                        rgb(0xe2e8f0)
+                                                                                    })
+                                                                                    .child(grp),
+                                                                            )
+                                                                            .when(is_sel, |r| {
+                                                                                r.child(
+                                                                                    div()
+                                                                                        .text_xs()
+                                                                                        .font_weight(gpui::FontWeight::BOLD)
+                                                                                        .text_color(rgb(0x60a5fa))
+                                                                                        .child("✓"),
+                                                                                )
+                                                                            })
+                                                                    }),
+                                                            )
+                                                            .when(can_create, |list| {
+                                                                let new_grp = create_name.clone();
+                                                                let label_txt = format!(
+                                                                    "+ Create \"{create_name}\""
+                                                                );
+                                                                list.child(
+                                                                    div()
+                                                                        .id("ssh-grp-opt-create")
+                                                                        .px_2p5()
+                                                                        .py_1p5()
+                                                                        .rounded_md()
+                                                                        .hover(|s| {
+                                                                            s.bg(rgb(0x2a3344))
+                                                                        })
+                                                                        .cursor_pointer()
+                                                                        .text_xs()
+                                                                        .font_weight(
+                                                                            gpui::FontWeight::SEMIBOLD,
+                                                                        )
+                                                                        .text_color(rgb(0x93c5fd))
+                                                                        .on_click(cx.listener(
+                                                                            move |this, _, _, cx| {
+                                                                                cx.stop_propagation();
+                                                                                if !this
+                                                                                    .ssh_store
+                                                                                    .groups
+                                                                                    .contains(
+                                                                                        &new_grp,
+                                                                                    )
+                                                                                {
+                                                                                    this.ssh_store
+                                                                                        .groups
+                                                                                        .push(
+                                                                                            new_grp
+                                                                                                .clone(),
+                                                                                        );
+                                                                                    save_ssh_store(
+                                                                                        &this
+                                                                                            .ssh_store,
+                                                                                    );
+                                                                                }
+                                                                                this.ssh_form_group =
+                                                                                    Some(
+                                                                                        new_grp
+                                                                                            .clone(),
+                                                                                    );
+                                                                                this.active_dropdown_id =
+                                                                                    None;
+                                                                                cx.notify();
+                                                                            },
+                                                                        ))
+                                                                        .child(label_txt),
+                                                                )
+                                                            }),
+                                                    );
+                                                el.child(gpui::deferred(menu).with_priority(20))
+                                            })
+                                            .into_any_element()
+                                    }),
+                            ),
+                    ),
+                    )
+                    .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .w_full()
                     .flex()
                     .flex_col()
                     .gap_3p5()
@@ -10490,46 +11333,12 @@ impl LaralahApp {
                                 .child(err.clone()),
                         )
                     })
-                    // 0. Connection type: SSH server or a Docker container on this machine
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1p5()
-                            .child(ssh_field_label("Connection Type"))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .p_0p5()
-                                    .gap_0p5()
-                                    .rounded_lg()
-                                    .bg(rgb(0x181c23))
-                                    .border_1()
-                                    .border_color(rgb(0x364052))
-                                    .children([ConnectionKind::Ssh, ConnectionKind::LocalDocker].into_iter().map(|kind| {
-                                        let selected = self.ssh_form_kind == kind;
-                                        div()
-                                            .id(SharedString::from(format!("ssh-form-kind-{kind:?}")))
-                                            .flex_1()
-                                            .py_1p5()
-                                            .rounded_md()
-                                            .flex()
-                                            .justify_center()
-                                            .cursor_pointer()
-                                            .text_xs()
-                                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                                            .when(selected, |el| el.bg(rgb(0x2563eb)).text_color(fixed_rgb(0xffffff)))
-                                            .when(!selected, |el| {
-                                                el.text_color(rgb(0x94a3b8)).hover(|s| s.bg(rgb(0x262c38)))
-                                            })
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.set_ssh_form_kind(kind, window, cx);
-                                            }))
-                                            .child(kind.label())
-                                    })),
-                            ),
-                    )
+                    .when(!is_local, |el| {
+                        el.child(form_section_header(
+                            "Server",
+                            "Where to connect, and the Laravel app folder on that server.",
+                        ))
+                    })
                     // 1. Load SSH Config
                     .when(!is_local, |el| el.child(
                         div()
@@ -10944,7 +11753,7 @@ impl LaralahApp {
                     }))
                     // 3c. Local Docker: pick a running container on this machine
                     .when(is_local, |el| {
-                        el.child(self.render_local_docker_picker(cx)).child(
+                        el.child(self.render_local_docker_picker(picker_cols, cx)).child(
                             div()
                                 .flex()
                                 .flex_row()
@@ -10969,59 +11778,13 @@ impl LaralahApp {
                                 ),
                         )
                     })
-                    // 4. Local path + [ Select ]
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1p5()
-                            .child(ssh_field_label("Local path"))
-                            .child(
-                                div()
-                                    .h(px(36.0))
-                                    .pl_3()
-                                    .pr_1p5()
-                                    .rounded_md()
-                                    .bg(rgb(0x363c49))
-                                    .border_1()
-                                    .border_color(rgb(0x454d5e))
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap_1p5()
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .truncate()
-                                            .text_xs()
-                                            .text_color(if self.ssh_form_local_path.is_some() {
-                                                rgb(0xf3f4f6)
-                                            } else {
-                                                rgb(0x9ca3af)
-                                            })
-                                            .child(local_path_text),
-                                    )
-                                    .when(self.ssh_form_local_path.is_some(), |el| {
-                                        el.child(settings_action_btn(
-                                            "ssh-clear-local-path",
-                                            "Clear",
-                                            cx.listener(|this, _, _, cx| {
-                                                this.ssh_form_local_path = None;
-                                                cx.notify();
-                                            }),
-                                        ))
-                                    })
-                                    .child(settings_action_btn(
-                                        "ssh-select-local-path",
-                                        "Select",
-                                        cx.listener(|this, _, _, cx| {
-                                            this.select_ssh_local_path_dialog(cx);
-                                        }),
-                                    )),
-                            ),
-                    )
                     // 5. Authentication Method
+                    .when(!is_local, |el| {
+                        el.child(form_section_header(
+                            "Authentication",
+                            "Secrets are kept in the system keychain, never in the settings file.",
+                        ))
+                    })
                     .when(!is_local, |el| el.child(
                         div()
                             .flex()
@@ -11188,431 +11951,68 @@ impl LaralahApp {
                                 ),
                         )
                     })
-                    // 8. Row: Color swatches | Group selector
+                    .child(form_section_header(
+                        "Workspace",
+                        "Optional. Where this app's code lives on this Mac.",
+                    ))
+                    // 4. Local path + [ Select ]
                     .child(
                         div()
-                            .pt_1()
                             .flex()
-                            .flex_row()
-                            .gap_3p5()
+                            .flex_col()
+                            .gap_1p5()
+                            .child(ssh_field_label("Local project folder"))
                             .child(
                                 div()
-                                    .w_1_2()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_2()
-                                    .child(ssh_field_label("Color"))
-                                    .child(
-                                        div()
-                                            .h(px(36.0))
-                                            .flex()
-                                            .flex_row()
-                                            .items_center()
-                                            .gap_2p5()
-                                            .children(SSH_COLOR_SWATCHES.iter().map(
-                                                |(hex, name)| {
-                                                    let c = *hex;
-                                                    let selected = self.ssh_form_color_hex == c;
-                                                    div()
-                                                        .id(SharedString::from(format!(
-                                                            "ssh-swatch-{name}"
-                                                        )))
-                                                        .size(px(22.0))
-                                                        .rounded_full()
-                                                        .bg(rgb(c))
-                                                        .cursor_pointer()
-                                                        .when(selected, |d| {
-                                                            d.border_2()
-                                                                .border_color(rgb(0xffffff))
-                                                        })
-                                                        .on_click(cx.listener(
-                                                            move |this, _, _, cx| {
-                                                                this.ssh_form_color_hex = c;
-                                                                cx.notify();
-                                                            },
-                                                        ))
-                                                },
-                                            )),
-                                    ),
+                                    .text_xs()
+                                    .text_color(rgb(0x94a3b8))
+                                    .child("The same Laravel app checked out on this Mac. Enables autocomplete and Laravel version detection."),
                             )
                             .child(
                                 div()
-                                    .w_1_2()
+                                    .h(px(36.0))
+                                    .pl_3()
+                                    .pr_1p5()
+                                    .rounded_md()
+                                    .bg(rgb(0x363c49))
+                                    .border_1()
+                                    .border_color(rgb(0x454d5e))
                                     .flex()
-                                    .flex_col()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
                                     .gap_1p5()
-                                    .child(ssh_field_label("Group"))
-                                    .child({
-                                        let id_shared =
-                                            SharedString::from("ssh-form-group-select");
-                                        let id_toggle = id_shared.clone();
-                                        let is_open =
-                                            self.active_dropdown_id.as_ref() == Some(&id_shared);
-                                        let filter_raw =
-                                            self.ssh_group_combo_input.read(cx).text().trim().to_string();
-                                        let filter_lc = filter_raw.to_lowercase();
-
-                                        let mut group_names: Vec<String> =
-                                            self.ssh_store.groups.clone();
-                                        if let Some(ref current_grp) = self.ssh_form_group
-                                            && !group_names.contains(current_grp)
-                                        {
-                                            group_names.push(current_grp.clone());
-                                        }
-
-                                        let exact_exists = group_names
-                                            .iter()
-                                            .any(|g| g.eq_ignore_ascii_case(&filter_raw));
-                                        let filtered_groups: Vec<String> = group_names
-                                            .into_iter()
-                                            .filter(|g| {
-                                                filter_lc.is_empty()
-                                                    || g.to_lowercase().contains(&filter_lc)
-                                            })
-                                            .collect();
-                                        let show_none = filter_lc.is_empty()
-                                            || "none (ungrouped)".contains(&filter_lc);
-
+                                    .child(
                                         div()
-                                            .relative()
-                                            .w_full()
-                                            .child(
-                                                div()
-                                                    .id(id_shared)
-                                                    .w_full()
-                                                    .h(px(36.0))
-                                                    .px_3()
-                                                    .rounded_lg()
-                                                    .bg(rgb(0x181c23))
-                                                    .border_1()
-                                                    .border_color(if is_open {
-                                                        rgb(0x3b82f6)
-                                                    } else {
-                                                        rgb(0x364052)
-                                                    })
-                                                    .hover(move |s| {
-                                                        s.bg(rgb(0x1f2530)).border_color(if is_open
-                                                        {
-                                                            rgb(0x3b82f6)
-                                                        } else {
-                                                            rgb(0x4b5870)
-                                                        })
-                                                    })
-                                                    .cursor_pointer()
-                                                    .overflow_hidden()
-                                                    .flex()
-                                                    .flex_row()
-                                                    .items_center()
-                                                    .justify_between()
-                                                    .gap_2()
-                                                    .on_mouse_down(
-                                                        gpui::MouseButton::Left,
-                                                        |_, _, cx| {
-                                                            cx.stop_propagation();
-                                                        },
-                                                    )
-                                                    .on_click(cx.listener(
-                                                        move |this, _, window, cx| {
-                                                            cx.stop_propagation();
-                                                            if this.active_dropdown_id.as_ref()
-                                                                == Some(&id_toggle)
-                                                            {
-                                                                this.active_dropdown_id = None;
-                                                            } else {
-                                                                this.ssh_group_combo_input.update(
-                                                                    cx,
-                                                                    |tf, cx| tf.set_text("", cx),
-                                                                );
-                                                                this.active_dropdown_id =
-                                                                    Some(id_toggle.clone());
-                                                                let fh = this
-                                                                    .ssh_group_combo_input
-                                                                    .focus_handle(cx);
-                                                                window.focus(&fh);
-                                                            }
-                                                            cx.notify();
-                                                        },
-                                                    ))
-                                                    .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .truncate()
-                                                            .text_xs()
-                                                            .text_color(rgb(0xf1f5f9))
-                                                            .child(group_label.clone()),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .flex_none()
-                                                            .text_xs()
-                                                            .text_color(if is_open {
-                                                                rgb(0x60a5fa)
-                                                            } else {
-                                                                rgb(0x94a3b8)
-                                                            })
-                                                            .child(if is_open { "▴" } else { "▾" }),
-                                                    ),
-                                            )
-                                            .when(is_open, |el| {
-                                                let combo_in = self.ssh_group_combo_input.clone();
-                                                let combo_click = combo_in.clone();
-                                                let is_none_sel = self.ssh_form_group.is_none();
-                                                let create_name = filter_raw.clone();
-                                                let can_create =
-                                                    !create_name.is_empty() && !exact_exists;
-
-                                                let menu = div()
-                                                    .id("ssh-form-group-select-menu")
-                                                    .occlude()
-                                                    .absolute()
-                                                    .left_0()
-                                                    .right_0()
-                                                    .bottom(px(40.0))
-                                                    .rounded_lg()
-                                                    .bg(rgb(0x1e2430))
-                                                    .border_1()
-                                                    .border_color(rgb(0x3b4963))
-                                                    .shadow_lg()
-                                                    .p_1p5()
-                                                    .flex()
-                                                    .flex_col()
-                                                    .gap_1()
-                                                    .on_mouse_down(
-                                                        gpui::MouseButton::Left,
-                                                        |_, _, cx| {
-                                                            cx.stop_propagation();
-                                                        },
-                                                    )
-                                                    .on_click(|_, _, cx| {
-                                                        cx.stop_propagation();
-                                                    })
-                                                    .on_scroll_wheel(|_, _, cx| {
-                                                        cx.stop_propagation();
-                                                    })
-                                                    .child(
-                                                        div()
-                                                            .h(px(30.0))
-                                                            .px_2p5()
-                                                            .rounded_md()
-                                                            .bg(rgb(0x141820))
-                                                            .border_1()
-                                                            .border_color(rgb(0x334155))
-                                                            .cursor(gpui::CursorStyle::IBeam)
-                                                            .on_mouse_down(
-                                                                gpui::MouseButton::Left,
-                                                                move |ev, window, cx| {
-                                                                    cx.stop_propagation();
-                                                                    combo_click.update(
-                                                                        cx,
-                                                                        |tf, cx| {
-                                                                            tf.handle_mouse_down(
-                                                                                ev, window, cx,
-                                                                            );
-                                                                        },
-                                                                    );
-                                                                },
-                                                            )
-                                                            .flex()
-                                                            .items_center()
-                                                            .child(combo_in),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .id("ssh-group-combo-scroll")
-                                                            .max_h(px(176.0))
-                                                            .overflow_y_scroll()
-                                                            .flex()
-                                                            .flex_col()
-                                                            .gap_0p5()
-                                                            .when(show_none, |list| {
-                                                                list.child(
-                                                                    div()
-                                                                        .id("ssh-grp-opt-none")
-                                                                        .px_2p5()
-                                                                        .py_1p5()
-                                                                        .rounded_md()
-                                                                        .when(is_none_sel, |r| {
-                                                                            r.bg(rgba(0x2563eb38))
-                                                                        })
-                                                                        .hover(|s| {
-                                                                            s.bg(rgb(0x2a3344))
-                                                                        })
-                                                                        .cursor_pointer()
-                                                                        .flex()
-                                                                        .flex_row()
-                                                                        .items_center()
-                                                                        .justify_between()
-                                                                        .on_click(cx.listener(
-                                                                            |this, _, _, cx| {
-                                                                                cx.stop_propagation();
-                                                                                this.ssh_form_group =
-                                                                                    None;
-                                                                                this.active_dropdown_id =
-                                                                                    None;
-                                                                                cx.notify();
-                                                                            },
-                                                                        ))
-                                                                        .child(
-                                                                            div()
-                                                                                .text_xs()
-                                                                                .text_color(
-                                                                                    rgb(0xe2e8f0),
-                                                                                )
-                                                                                .child(
-                                                                                    "None (Ungrouped)",
-                                                                                ),
-                                                                        )
-                                                                        .when(is_none_sel, |r| {
-                                                                            r.child(
-                                                                                div()
-                                                                                    .text_xs()
-                                                                                    .font_weight(
-                                                                                        gpui::FontWeight::BOLD,
-                                                                                    )
-                                                                                    .text_color(
-                                                                                        rgb(0x60a5fa),
-                                                                                    )
-                                                                                    .child("✓"),
-                                                                            )
-                                                                        }),
-                                                                )
-                                                            })
-                                                            .children(
-                                                                filtered_groups
-                                                                    .into_iter()
-                                                                    .enumerate()
-                                                                    .map(|(idx, grp)| {
-                                                                        let is_sel = self
-                                                                            .ssh_form_group
-                                                                            .as_deref()
-                                                                            == Some(grp.as_str());
-                                                                        let grp_set = grp.clone();
-                                                                        div()
-                                                                            .id(SharedString::from(
-                                                                                format!(
-                                                                                    "ssh-grp-opt-{idx}"
-                                                                                ),
-                                                                            ))
-                                                                            .px_2p5()
-                                                                            .py_1p5()
-                                                                            .rounded_md()
-                                                                            .when(is_sel, |r| {
-                                                                                r.bg(rgba(
-                                                                                    0x2563eb38,
-                                                                                ))
-                                                                            })
-                                                                            .hover(|s| {
-                                                                                s.bg(rgb(0x2a3344))
-                                                                            })
-                                                                            .cursor_pointer()
-                                                                            .flex()
-                                                                            .flex_row()
-                                                                            .items_center()
-                                                                            .justify_between()
-                                                                            .on_click(cx.listener(
-                                                                                move |this,
-                                                                                      _,
-                                                                                      _,
-                                                                                      cx| {
-                                                                                    cx.stop_propagation();
-                                                                                    this.ssh_form_group =
-                                                                                        Some(
-                                                                                            grp_set
-                                                                                                .clone(),
-                                                                                        );
-                                                                                    this.active_dropdown_id =
-                                                                                        None;
-                                                                                    cx.notify();
-                                                                                },
-                                                                            ))
-                                                                            .child(
-                                                                                div()
-                                                                                    .flex_1()
-                                                                                    .truncate()
-                                                                                    .text_xs()
-                                                                                    .font_weight(if is_sel {
-                                                                                        gpui::FontWeight::SEMIBOLD
-                                                                                    } else {
-                                                                                        gpui::FontWeight::NORMAL
-                                                                                    })
-                                                                                    .text_color(if is_sel {
-                                                                                        rgb(0xffffff)
-                                                                                    } else {
-                                                                                        rgb(0xe2e8f0)
-                                                                                    })
-                                                                                    .child(grp),
-                                                                            )
-                                                                            .when(is_sel, |r| {
-                                                                                r.child(
-                                                                                    div()
-                                                                                        .text_xs()
-                                                                                        .font_weight(gpui::FontWeight::BOLD)
-                                                                                        .text_color(rgb(0x60a5fa))
-                                                                                        .child("✓"),
-                                                                                )
-                                                                            })
-                                                                    }),
-                                                            )
-                                                            .when(can_create, |list| {
-                                                                let new_grp = create_name.clone();
-                                                                let label_txt = format!(
-                                                                    "+ Create \"{create_name}\""
-                                                                );
-                                                                list.child(
-                                                                    div()
-                                                                        .id("ssh-grp-opt-create")
-                                                                        .px_2p5()
-                                                                        .py_1p5()
-                                                                        .rounded_md()
-                                                                        .hover(|s| {
-                                                                            s.bg(rgb(0x2a3344))
-                                                                        })
-                                                                        .cursor_pointer()
-                                                                        .text_xs()
-                                                                        .font_weight(
-                                                                            gpui::FontWeight::SEMIBOLD,
-                                                                        )
-                                                                        .text_color(rgb(0x93c5fd))
-                                                                        .on_click(cx.listener(
-                                                                            move |this, _, _, cx| {
-                                                                                cx.stop_propagation();
-                                                                                if !this
-                                                                                    .ssh_store
-                                                                                    .groups
-                                                                                    .contains(
-                                                                                        &new_grp,
-                                                                                    )
-                                                                                {
-                                                                                    this.ssh_store
-                                                                                        .groups
-                                                                                        .push(
-                                                                                            new_grp
-                                                                                                .clone(),
-                                                                                        );
-                                                                                    save_ssh_store(
-                                                                                        &this
-                                                                                            .ssh_store,
-                                                                                    );
-                                                                                }
-                                                                                this.ssh_form_group =
-                                                                                    Some(
-                                                                                        new_grp
-                                                                                            .clone(),
-                                                                                    );
-                                                                                this.active_dropdown_id =
-                                                                                    None;
-                                                                                cx.notify();
-                                                                            },
-                                                                        ))
-                                                                        .child(label_txt),
-                                                                )
-                                                            }),
-                                                    );
-                                                el.child(gpui::deferred(menu).with_priority(20))
+                                            .flex_1()
+                                            .truncate()
+                                            .text_xs()
+                                            .text_color(if self.ssh_form_local_path.is_some() {
+                                                rgb(0xf3f4f6)
+                                            } else {
+                                                rgb(0x9ca3af)
                                             })
-                                            .into_any_element()
-                                    }),
+                                            .child(local_path_text),
+                                    )
+                                    .when(self.ssh_form_local_path.is_some(), |el| {
+                                        el.child(settings_action_btn(
+                                            "ssh-clear-local-path",
+                                            "Clear",
+                                            cx.listener(|this, _, _, cx| {
+                                                this.ssh_form_local_path = None;
+                                                cx.notify();
+                                            }),
+                                        ))
+                                    })
+                                    .child(settings_action_btn(
+                                        "ssh-select-local-path",
+                                        "Select",
+                                        cx.listener(|this, _, _, cx| {
+                                            this.select_ssh_local_path_dialog(cx);
+                                        }),
+                                    )),
                             ),
+                    ),
                     ),
             ))
     }
@@ -12185,18 +12585,22 @@ impl Render for LaralahApp {
                 }))
             })
             .when(self.overlay == OverlayKind::SshConnections, |el| {
+                let viewport_w = f32::from(window.viewport_size().width);
                 el.child(theme::scoped(theme::Scope::DarkAuthored, || {
-                    self.render_ssh_modal(cx).into_any_element()
+                    self.render_ssh_modal(viewport_w, cx).into_any_element()
                 }))
             })
     }
 }
 
-/// Max width of the centered content column on full-window pages (Connections).
-const PAGE_COLUMN_MAX_W: f32 = 880.0;
+/// Max width of the Connections pages (list grid and two-column form).
+const CONNECTIONS_LIST_MAX_W: f32 = 1180.0;
+
+/// Width of the type / preview / appearance column in the connection form.
+const FORM_SIDE_W: f32 = 300.0;
 
 /// Full-width band with a bottom border whose content is a centered column.
-fn centered_band(border: u32, inner: gpui::Div) -> gpui::Div {
+fn centered_band_w(max_w: f32, border: u32, inner: gpui::Div) -> gpui::Div {
     div()
         .w_full()
         .flex_none()
@@ -12205,12 +12609,16 @@ fn centered_band(border: u32, inner: gpui::Div) -> gpui::Div {
         .justify_center()
         .border_b_1()
         .border_color(rgb(border))
-        .child(inner.w_full().max_w(px(PAGE_COLUMN_MAX_W)))
+        .child(inner.w_full().max_w(px(max_w)))
 }
 
 /// Full-width scroll area (so wheel events anywhere on the page scroll it)
-/// holding a centered content column.
-fn centered_scroll(id: &'static str, inner: gpui::Div) -> gpui::Stateful<gpui::Div> {
+/// holding a centered column.
+fn centered_scroll_w(
+    id: &'static str,
+    max_w: f32,
+    inner: gpui::Div,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .flex_1()
@@ -12220,7 +12628,7 @@ fn centered_scroll(id: &'static str, inner: gpui::Div) -> gpui::Stateful<gpui::D
         .flex()
         .flex_col()
         .items_center()
-        .child(inner.flex_none().w_full().max_w(px(PAGE_COLUMN_MAX_W)))
+        .child(inner.flex_none().w_full().max_w(px(max_w)))
 }
 
 fn dark_close_button(
@@ -12831,6 +13239,37 @@ fn format_with_commas(n: u64) -> String {
         out.push(ch);
     }
     out.chars().rev().collect()
+}
+
+/// Heading that starts a group of fields in the connection form.
+fn form_section_header(title: &str, description: &str) -> gpui::AnyElement {
+    div()
+        .pt_3()
+        .flex()
+        .flex_col()
+        .gap_0p5()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(rgb(0x93c5fd))
+                        .child(title.to_uppercase()),
+                )
+                .child(div().flex_1().h(px(1.0)).bg(rgb(0x2a313e))),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(0x94a3b8))
+                .child(description.to_string()),
+        )
+        .into_any_element()
 }
 
 fn ssh_field_label(label: &str) -> gpui::AnyElement {

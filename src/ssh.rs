@@ -44,15 +44,6 @@ pub enum ConnectionKind {
     LocalDocker,
 }
 
-impl ConnectionKind {
-    pub fn label(&self) -> &'static str {
-        match self {
-            ConnectionKind::Ssh => "SSH",
-            ConnectionKind::LocalDocker => "Local Docker",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SshConnectionProfile {
     pub id: String,
