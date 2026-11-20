@@ -97,6 +97,15 @@ pub fn filter_palette_entries(
                         image, workdir, ..
                     } => format!("Docker container · {image} · {workdir}"),
                     ExecutionTarget::Ssh {
+                        local_docker: true,
+                        workdir,
+                        docker_container,
+                        ..
+                    } => format!(
+                        "Local Docker · {} · {workdir}",
+                        docker_container.as_deref().unwrap_or("")
+                    ),
+                    ExecutionTarget::Ssh {
                         user,
                         host,
                         port,
@@ -387,6 +396,7 @@ mod tests {
             },
             ExecutionTarget::Ssh {
                 id: "t1".to_string(),
+                local_docker: false,
                 name: "prod".to_string(),
                 host: "prod.example.com".to_string(),
                 port: 22,

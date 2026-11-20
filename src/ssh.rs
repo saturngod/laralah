@@ -35,9 +35,29 @@ impl SshAuthMethod {
     }
 }
 
+/// How a saved connection reaches PHP: over SSH (optionally into a Docker container on that
+/// server), or straight into a Docker container on this machine with `docker exec`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConnectionKind {
+    #[default]
+    Ssh,
+    LocalDocker,
+}
+
+impl ConnectionKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ConnectionKind::Ssh => "SSH",
+            ConnectionKind::LocalDocker => "Local Docker",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SshConnectionProfile {
     pub id: String,
+    #[serde(default)]
+    pub kind: ConnectionKind,
     pub label: String,
     pub host: String,
     pub port: u16,
@@ -80,6 +100,7 @@ impl SshConnectionProfile {
     pub fn new_empty() -> Self {
         Self {
             id: generate_ssh_id(),
+            kind: ConnectionKind::Ssh,
             label: String::new(),
             host: String::new(),
             port: 22,
@@ -96,8 +117,12 @@ impl SshConnectionProfile {
         }
     }
 
+    pub fn is_local_docker(&self) -> bool {
+        self.kind == ConnectionKind::LocalDocker
+    }
+
     pub fn active_docker_container(&self) -> Option<&str> {
-        if self.docker_enabled {
+        if self.docker_enabled || self.is_local_docker() {
             let trimmed = self.docker_container.trim();
             if !trimmed.is_empty() {
                 return Some(trimmed);
@@ -115,14 +140,18 @@ impl SshConnectionProfile {
     }
 
     pub fn to_execution_target(&self) -> ExecutionTarget {
+        let local_docker = self.is_local_docker();
         ExecutionTarget::Ssh {
             id: self.id.clone(),
-            name: if self.label.trim().is_empty() {
-                format!("{}@{}", self.username, self.host)
-            } else {
+            local_docker,
+            name: if !self.label.trim().is_empty() {
                 self.label.trim().to_string()
+            } else if local_docker {
+                self.docker_container.trim().to_string()
+            } else {
+                format!("{}@{}", self.username, self.host)
             },
-            host: self.host.trim().to_string(),
+            host: if local_docker { String::new() } else { self.host.trim().to_string() },
             port: self.port,
             user: self.username.trim().to_string(),
             workdir: self.application_folder.trim().to_string(),
@@ -455,6 +484,7 @@ pub fn default_seeded_ssh_store() -> SshStore {
         connections: vec![
             SshConnectionProfile {
                 id: "ssh-seed-prod".to_string(),
+                kind: ConnectionKind::Ssh,
                 label: "Laralah Production".to_string(),
                 host: "207.154.198.53".to_string(),
                 port: 22,
@@ -471,6 +501,7 @@ pub fn default_seeded_ssh_store() -> SshStore {
             },
             SshConnectionProfile {
                 id: "ssh-seed-staging".to_string(),
+                kind: ConnectionKind::Ssh,
                 label: "Staging Forge".to_string(),
                 host: "staging.laralah.internal".to_string(),
                 port: 22,
@@ -946,5 +977,43 @@ Host staging-api
             build_ssh_remote_php_command("/srv/o'reilly", Some("a1b2c3d4e5f6")),
             "PATH=\"$PATH:/usr/local/bin:/snap/bin\" docker exec -i -w '/srv/o'\\''reilly' 'a1b2c3d4e5f6' php"
         );
+    }
+
+    #[test]
+    fn local_docker_profile_becomes_local_docker_target() {
+        let mut p = SshConnectionProfile::new_empty();
+        p.kind = ConnectionKind::LocalDocker;
+        p.label = String::new();
+        p.host = "ignored.example.com".to_string();
+        p.docker_enabled = false;
+        p.docker_container = "laravel.test".to_string();
+        p.application_folder = "/var/www/html".to_string();
+        p.color_hex = 0x38bdf8;
+        let ExecutionTarget::Ssh {
+            local_docker,
+            name,
+            host,
+            docker_container,
+            workdir,
+            ..
+        } = p.to_execution_target()
+        else {
+            panic!("expected a saved-connection target");
+        };
+        assert!(local_docker);
+        assert_eq!(name, "laravel.test");
+        assert!(host.is_empty());
+        assert_eq!(docker_container.as_deref(), Some("laravel.test"));
+        assert_eq!(workdir, "/var/www/html");
+        assert_eq!(p.to_execution_target().kind_badge(), "DOCKER");
+        assert_eq!(p.to_execution_target().label(), "Docker: laravel.test");
+    }
+
+    #[test]
+    fn profiles_saved_before_connection_kinds_load_as_ssh() {
+        let json = r#"{"id":"ssh-1","label":"old","host":"h","port":22,"username":"forge","application_folder":"/home/forge/app"}"#;
+        let p: SshConnectionProfile = serde_json::from_str(json).unwrap();
+        assert_eq!(p.kind, ConnectionKind::Ssh);
+        assert!(!p.is_local_docker());
     }
 }
