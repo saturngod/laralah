@@ -8856,14 +8856,21 @@ impl LaralahApp {
                     .flex_row()
                     .items_center()
                     .justify_between()
-                    .child(div().w(px(52.0)))
+                    .relative()
+                    // Title is centered on the whole window, not the padded area.
                     .child(
                         div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .text_xs()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(0xe2e8f0))
                             .child("Settings"),
                     )
+                    .child(div().w(px(52.0)))
                     .child(
                         div()
                             .w(px(52.0))
@@ -9474,53 +9481,90 @@ impl LaralahApp {
             SshModalMode::Form => self.render_ssh_form_view(cx).into_any_element(),
         };
 
+        let title = match self.ssh_modal_mode {
+            SshModalMode::List => "Connections",
+            SshModalMode::Form if self.ssh_editing_id.is_some() => "Edit Connection",
+            SshModalMode::Form => "New Connection",
+        };
+
+        // Full-window page (same chrome as Settings) so the form has room to breathe.
         div()
-            .id("ssh-modal-backdrop")
+            .id("ssh-modal-root")
             .key_context("SshModal")
             .absolute()
             .inset_0()
-            .bg(rgba(0x0f172a88))
+            .bg(rgb(0x1c2028))
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation();
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                let mut changed = false;
+                if this.active_dropdown_id.is_some() {
+                    this.active_dropdown_id = None;
+                    changed = true;
+                }
+                if this.ssh_docker_picker_open {
+                    this.ssh_docker_picker_open = false;
+                    changed = true;
+                }
+                if changed {
+                    cx.notify();
+                }
+            }))
             .flex()
-            .items_start()
-            .justify_center()
-            .pt(px(48.0))
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.close_overlay(window, cx);
-                }),
-            )
+            .flex_col()
+            // Top bar (leaves room for the macOS traffic lights, draggable like a titlebar)
             .child(
                 div()
-                    .id("ssh-modal-card")
-                    .w(px(650.0))
-                    .max_h(px(650.0))
-                    .bg(rgb(0x21242c))
-                    .border_1()
-                    .border_color(rgb(0x343946))
-                    .rounded_lg()
-                    .shadow_xl()
-                    .overflow_hidden()
+                    .h(px(40.0))
+                    .flex_none()
+                    .pl(px(86.0))
+                    .pr_4()
+                    .bg(rgb(0x171a21))
+                    .border_b_1()
+                    .border_color(rgb(0x2a313e))
+                    .window_control_area(gpui::WindowControlArea::Drag)
+                    .on_mouse_down(gpui::MouseButton::Left, titlebar_double_click)
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .relative()
+                    // Title is centered on the whole window, not the padded area.
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(rgb(0xe2e8f0))
+                            .child(title),
+                    )
+                    .child(div().w(px(52.0)))
+                    .child(
+                        div()
+                            .w(px(52.0))
+                            .flex()
+                            .justify_end()
+                            .child(dark_close_button(
+                                "ssh-close-btn",
+                                cx.listener(|this, _, window, cx| {
+                                    this.close_overlay(window, cx);
+                                }),
+                            )),
+                    ),
+            )
+            // Body: centered content column
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
                     .flex()
                     .flex_col()
-                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        cx.stop_propagation();
-                        let mut changed = false;
-                        if this.active_dropdown_id.is_some() {
-                            this.active_dropdown_id = None;
-                            changed = true;
-                        }
-                        if this.ssh_docker_picker_open {
-                            this.ssh_docker_picker_open = false;
-                            changed = true;
-                        }
-                        if changed {
-                            cx.notify();
-                        }
-                    }))
                     .child(modal_body),
             )
     }
@@ -9585,39 +9629,13 @@ impl LaralahApp {
             .overflow_hidden()
             .flex()
             .flex_col()
-            // Top header bar
-            .child(
-                div()
-                    .px_5()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(rgb(0x323842))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(rgb(0xf3f4f6))
-                            .child("SSH Connections"),
-                    )
-                    .child(dark_close_button(
-                        "ssh-list-close",
-                        cx.listener(|this, _, window, cx| {
-                            this.close_overlay(window, cx);
-                        }),
-                    )),
-            )
             // Search bar + `+ Connection` / `+ Group` buttons matching screenshot 1
-            .child(
+            .child(centered_band(
+                0x2d323e,
                 div()
                     .px_5()
                     .pt_4()
                     .pb_3()
-                    .border_b_1()
-                    .border_color(rgb(0x2d323e))
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -9768,13 +9786,11 @@ impl LaralahApp {
                                 )),
                         )
                     }),
-            )
+            ))
             // Scrollable connections & groups list
-            .child(
+            .child(centered_scroll(
+                "ssh-connections-scroll",
                 div()
-                    .id("ssh-connections-scroll")
-                    .flex_1()
-                    .overflow_y_scroll()
                     .px_5()
                     .py_3p5()
                     .flex()
@@ -10005,7 +10021,7 @@ impl LaralahApp {
                                     )
                             }))
                     })),
-            )
+            ))
     }
 
     /// Local Docker container picker: the search box only filters; a row click is the choice.
@@ -10366,12 +10382,11 @@ impl LaralahApp {
             .flex()
             .flex_col()
             // Top bar matching screenshots 2 & 3 (`New Connection` | `[ Save & Connect ]` `[ Save ]`)
-            .child(
+            .child(centered_band(
+                0x323842,
                 div()
                     .px_5()
                     .py_3p5()
-                    .border_b_1()
-                    .border_color(rgb(0x323842))
                     .flex()
                     .flex_row()
                     .items_center()
@@ -10451,13 +10466,11 @@ impl LaralahApp {
                                     .child("Save"),
                             ),
                     ),
-            )
+            ))
             // Scrollable form body
-            .child(
+            .child(centered_scroll(
+                "ssh-form-scroll",
                 div()
-                    .id("ssh-form-scroll")
-                    .flex_1()
-                    .overflow_y_scroll()
                     .px_5()
                     .py_4()
                     .flex()
@@ -11601,8 +11614,9 @@ impl LaralahApp {
                                     }),
                             ),
                     ),
-            )
+            ))
     }
+
     fn render_sidebar_sash(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_dragging = matches!(self.sash_drag, SashDragState::Sidebar { .. });
         let interactive = self.overlay == OverlayKind::None;
@@ -12176,6 +12190,37 @@ impl Render for LaralahApp {
                 }))
             })
     }
+}
+
+/// Max width of the centered content column on full-window pages (Connections).
+const PAGE_COLUMN_MAX_W: f32 = 880.0;
+
+/// Full-width band with a bottom border whose content is a centered column.
+fn centered_band(border: u32, inner: gpui::Div) -> gpui::Div {
+    div()
+        .w_full()
+        .flex_none()
+        .flex()
+        .flex_row()
+        .justify_center()
+        .border_b_1()
+        .border_color(rgb(border))
+        .child(inner.w_full().max_w(px(PAGE_COLUMN_MAX_W)))
+}
+
+/// Full-width scroll area (so wheel events anywhere on the page scroll it)
+/// holding a centered content column.
+fn centered_scroll(id: &'static str, inner: gpui::Div) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex_1()
+        .min_h_0()
+        .w_full()
+        .overflow_y_scroll()
+        .flex()
+        .flex_col()
+        .items_center()
+        .child(inner.flex_none().w_full().max_w(px(PAGE_COLUMN_MAX_W)))
 }
 
 fn dark_close_button(
