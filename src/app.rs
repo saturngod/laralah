@@ -38,7 +38,7 @@ use crate::settings::{
     ThemeMode,
     SettingsTab, all_setting_specs, available_editor_fonts, detect_php_version_line, is_php_detected,
     load_settings,
-    save_settings, search_settings, shortcut_reference_rows,
+    save_settings, search_settings,
 };
 use crate::ssh::{
     ConnectionKind, SSH_COLOR_SWATCHES, SshAuthMethod, SshConfigHost, SshConnectionProfile, SshStore,
@@ -185,6 +185,10 @@ pub struct LaralahApp {
     // Persisted application settings
     settings: AppSettings,
     active_settings_tab: SettingsTab,
+    /// Shortcut id waiting for a new key combination in Settings → Shortcuts.
+    recording_shortcut: Option<&'static str>,
+    shortcut_record_error: Option<String>,
+    _shortcut_interceptor: Option<gpui::Subscription>,
     detected_php_version: String,
     detected_laravel_version: String,
 
@@ -666,6 +670,9 @@ impl LaralahApp {
             last_settings_input_versions: init_versions,
             settings,
             active_settings_tab: SettingsTab::General,
+            recording_shortcut: None,
+            shortcut_record_error: None,
+            _shortcut_interceptor: None,
             detected_php_version,
             detected_laravel_version,
             ssh_store,
@@ -770,6 +777,11 @@ impl LaralahApp {
             ai_editor_undo_banner: false,
             ai_copied_msg_id: None,
         };
+        crate::keymap::apply(cx, &app.settings.custom_shortcuts);
+        let weak = cx.weak_entity();
+        app._shortcut_interceptor = Some(cx.intercept_keystrokes(move |event, _, cx| {
+            let _ = weak.update(cx, |app, cx| app.intercept_shortcut_recording(&event.keystroke, cx));
+        }));
         app.spawn_ai_event_listener(ai_ui_rx, cx);
         app.bootstrap_ai_discovery(cx);
         if has_initial_project {
@@ -2243,7 +2255,85 @@ impl LaralahApp {
         cx.notify();
     }
 
+    /// While a shortcut is being recorded, swallows the next key combination
+    /// before it can trigger any action and stores it as the new binding.
+    fn intercept_shortcut_recording(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) {
+        let Some(id) = self.recording_shortcut else {
+            return;
+        };
+        if self.overlay != OverlayKind::Settings {
+            self.stop_shortcut_recording(cx);
+            return;
+        }
+        cx.stop_propagation();
+        let Some(spec) = crate::keymap::spec_by_id(id) else {
+            self.stop_shortcut_recording(cx);
+            return;
+        };
+        let m = &keystroke.modifiers;
+        if keystroke.key == "escape" && !(m.control || m.alt || m.platform || m.shift) {
+            self.stop_shortcut_recording(cx);
+            return;
+        }
+        match crate::keymap::record(spec, keystroke) {
+            Ok(keys) => {
+                self.set_shortcut_keys(id, vec![keys], cx);
+                self.stop_shortcut_recording(cx);
+            }
+            Err(crate::keymap::RecordError::ModifierOnly) => {}
+            Err(crate::keymap::RecordError::NeedsModifier) => {
+                self.shortcut_record_error = Some(if cfg!(target_os = "macos") {
+                    "Add ⌘, ⌃ or ⌥ — a single key would block typing.".to_string()
+                } else {
+                    "Add Ctrl or Alt — a single key would block typing.".to_string()
+                });
+                cx.notify();
+            }
+        }
+    }
+
+    fn start_shortcut_recording(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        self.recording_shortcut = Some(id);
+        self.shortcut_record_error = None;
+        cx.notify();
+    }
+
+    fn stop_shortcut_recording(&mut self, cx: &mut Context<Self>) {
+        self.recording_shortcut = None;
+        self.shortcut_record_error = None;
+        cx.notify();
+    }
+
+    /// Stores `keys` for shortcut `id` (dropping the override when it matches the
+    /// defaults), saves settings and rebuilds the keymap.
+    fn set_shortcut_keys(&mut self, id: &'static str, keys: Vec<String>, cx: &mut Context<Self>) {
+        let Some(spec) = crate::keymap::spec_by_id(id) else {
+            return;
+        };
+        if keys.iter().map(String::as_str).eq(spec.defaults.iter().copied()) {
+            self.settings.custom_shortcuts.remove(id);
+        } else {
+            self.settings.custom_shortcuts.insert(id.to_string(), keys);
+        }
+        self.apply_shortcut_settings(cx);
+    }
+
+    fn reset_all_shortcuts(&mut self, cx: &mut Context<Self>) {
+        self.settings.custom_shortcuts.clear();
+        self.recording_shortcut = None;
+        self.shortcut_record_error = None;
+        self.apply_shortcut_settings(cx);
+    }
+
+    fn apply_shortcut_settings(&mut self, cx: &mut Context<Self>) {
+        save_settings(&self.settings);
+        crate::keymap::apply(cx, &self.settings.custom_shortcuts);
+        cx.notify();
+    }
+
     fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.recording_shortcut = None;
+        self.shortcut_record_error = None;
         self.mail_webview.update(cx, |wv, _| wv.hide());
         self.overlay = OverlayKind::None;
         self.active_dropdown_id = None;
@@ -3303,7 +3393,7 @@ impl LaralahApp {
                                     .font_family("Menlo")
                                     .text_xs()
                                     .text_color(theme::pick(0x94a3b8, 0xbfdbfe))
-                                    .child(crate::shortcut::label("⌘R")),
+                                    .child(crate::keymap::hint("run_code")),
                             ),
                     )
                     // Right AI Assistant Sidebar Toggle (`⌘ + I`)
@@ -3766,7 +3856,7 @@ impl LaralahApp {
                     TEXT_MAIN
                 },
                 cx.listener(|this, hovered: &bool, _, cx| {
-                    this.set_rail_hover(1, crate::shortcut::label("Project Explorer (⌘ + B)"), *hovered, cx);
+                    this.set_rail_hover(1, crate::keymap::hint_in("toggle_explorer", "Project Explorer ({})"), *hovered, cx);
                 }),
                 cx.listener(|this, _, _, cx| {
                     if this.show_landing {
@@ -3785,7 +3875,7 @@ impl LaralahApp {
                 false,
                 TEXT_MAIN,
                 cx.listener(|this, hovered: &bool, _, cx| {
-                    this.set_rail_hover(2, crate::shortcut::label("Open Folder (⌘ + O)"), *hovered, cx);
+                    this.set_rail_hover(2, crate::keymap::hint_in("open_folder", "Open Folder ({})"), *hovered, cx);
                 }),
                 cx.listener(|this, _, _, cx| {
                     this.open_directory_dialog(cx);
@@ -3801,7 +3891,7 @@ impl LaralahApp {
                     TEXT_MAIN
                 },
                 cx.listener(|this, hovered: &bool, _, cx| {
-                    this.set_rail_hover(3, crate::shortcut::label("SSH Connections (⌘ + K)"), *hovered, cx);
+                    this.set_rail_hover(3, crate::keymap::hint_in("ssh_connections", "SSH Connections ({})"), *hovered, cx);
                 }),
                 cx.listener(|this, _, window, cx| {
                     if this.overlay == OverlayKind::SshConnections {
@@ -3830,7 +3920,7 @@ impl LaralahApp {
                     TEXT_MAIN
                 },
                 cx.listener(|this, hovered: &bool, _, cx| {
-                    this.set_rail_hover(5, crate::shortcut::label("Logs Viewer (⌘ + L)"), *hovered, cx);
+                    this.set_rail_hover(5, crate::keymap::hint_in("toggle_logs", "Logs Viewer ({})"), *hovered, cx);
                 }),
                 cx.listener(|this, _, window, cx| {
                     if this.overlay == OverlayKind::LogViewer {
@@ -3850,7 +3940,7 @@ impl LaralahApp {
                     TEXT_MAIN
                 },
                 cx.listener(|this, hovered: &bool, _, cx| {
-                    this.set_rail_hover(6, crate::shortcut::label("Command Palette (⌘ + P)"), *hovered, cx);
+                    this.set_rail_hover(6, crate::keymap::hint_in("command_palette", "Command Palette ({})"), *hovered, cx);
                 }),
                 cx.listener(|this, _, window, cx| {
                     this.open_palette("", window, cx);
@@ -3868,7 +3958,7 @@ impl LaralahApp {
                         TEXT_MAIN
                     },
                     cx.listener(|this, hovered: &bool, _, cx| {
-                        this.set_rail_hover(99, crate::shortcut::label("Settings (⌘ + ,)"), *hovered, cx);
+                        this.set_rail_hover(99, crate::keymap::hint_in("open_settings", "Settings ({})"), *hovered, cx);
                     }),
                     cx.listener(|this, _, window, cx| {
                         if this.overlay == OverlayKind::Settings {
@@ -4505,7 +4595,7 @@ impl LaralahApp {
                                                     .text_color(rgb(0x334155))
                                                     .child("Search commands"),
                                             )
-                                            .child(landing_keycap(crate::shortcut::label("⌘ P"))),
+                                            .child(landing_keycap(crate::keymap::hint("command_palette"))),
                                     )
                                     .child(
                                         div()
@@ -4553,7 +4643,7 @@ impl LaralahApp {
                                     0xeff6ff,
                                     "Open Local Project",
                                     "Choose any Laravel or Composer directory",
-                                    crate::shortcut::label("⌘ O"),
+                                    crate::keymap::hint("open_folder"),
                                     cx.listener(|this, _, _, cx| {
                                         this.open_directory_dialog(cx);
                                     }),
@@ -4568,7 +4658,7 @@ impl LaralahApp {
                                         0xf0fdfa,
                                         "Connect to Server",
                                         "Run code on Forge or SSH servers",
-                                        crate::shortcut::label("⌘ K"),
+                                        crate::keymap::hint("ssh_connections"),
                                         cx.listener(|this, _, window, cx| {
                                             this.open_ssh_modal(window, cx);
                                         }),
@@ -4609,7 +4699,7 @@ impl LaralahApp {
                                         el.child(landing_empty_state(
                                             "icons/folder.svg",
                                             "No recent workspaces yet",
-                                            crate::shortcut::label("Open a Laravel folder with ⌘ O and it will show up here."),
+                                            crate::keymap::hint_in("open_folder", "Open a Laravel folder with {} and it will show up here."),
                                         ))
                                     })
                                     .child(
@@ -4746,7 +4836,7 @@ impl LaralahApp {
                                         el.child(landing_empty_state(
                                             "icons/server.svg",
                                             "No saved servers",
-                                            crate::shortcut::label("Add a Forge or SSH host with ⌘ K."),
+                                            crate::keymap::hint_in("ssh_connections", "Add a Forge or SSH host with {}."),
                                         ))
                                     })
                                     .child(
@@ -4870,10 +4960,10 @@ impl LaralahApp {
                             .justify_center()
                             .gap_x_5()
                             .gap_y_2()
-                            .child(landing_shortcut_chip("⌃ Space", "Autocomplete"))
-                            .child(landing_shortcut_chip(crate::shortcut::label("⌘ L"), "Logs viewer"))
-                            .child(landing_shortcut_chip(crate::shortcut::label("⌘ 3"), "CLI result"))
-                            .child(landing_shortcut_chip(crate::shortcut::label("⌘ ,"), "Settings")),
+                            .child(landing_shortcut_chip(crate::keymap::hint("trigger_autocomplete"), "Autocomplete"))
+                            .child(landing_shortcut_chip(crate::keymap::hint("toggle_logs"), "Logs viewer"))
+                            .child(landing_shortcut_chip(crate::keymap::hint("mode_cli"), "CLI result"))
+                            .child(landing_shortcut_chip(crate::keymap::hint("open_settings"), "Settings")),
                     ),
             )
     }
@@ -5187,7 +5277,7 @@ impl LaralahApp {
                         div()
                             .text_xs()
                             .text_color(rgb(TEXT_MUTED))
-                            .child(crate::shortcut::label("Press ⌘ + R or click Run in the toolbar")),
+                            .child(crate::keymap::hint_in("run_code", "Press {} or click Run in the toolbar")),
                     )
                     .into_any_element(),
                 Some(res) => match self.output_mode {
@@ -7768,7 +7858,7 @@ impl LaralahApp {
                                 div()
                                     .text_xs()
                                     .text_color(rgb(0x94a3b8))
-                                    .child(crate::shortcut::label("Hit ⌘ + R to refresh. This will run the complete code again.")),
+                                    .child(crate::keymap::hint_in("run_code", "Hit {} to refresh. This will run the complete code again.")),
                             ),
                     ),
             )
@@ -8047,6 +8137,195 @@ impl LaralahApp {
             .into_any_element()
     }
 
+    /// Rows of rebindable shortcuts: click the keycaps to record a new combination.
+    fn render_shortcut_editor(
+        &self,
+        specs: &[&'static crate::keymap::ShortcutSpec],
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let overrides = &self.settings.custom_shortcuts;
+        div()
+            .w_full()
+            .rounded_xl()
+            .bg(rgb(0x232833))
+            .border_1()
+            .border_color(rgb(0x313847))
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .children(specs.iter().enumerate().map(|(idx, spec)| {
+                let spec: &'static crate::keymap::ShortcutSpec = spec;
+                let id = spec.id;
+                let recording = self.recording_shortcut == Some(id);
+                let keys = crate::keymap::effective_keys(spec, overrides);
+                let customized = crate::keymap::is_customized(spec, overrides);
+                let conflicts: Vec<&'static str> = keys
+                    .iter()
+                    .flat_map(|k| crate::keymap::conflicts(spec, k, overrides))
+                    .map(|other| other.label)
+                    .collect();
+
+                let keycaps: Vec<gpui::AnyElement> = if recording {
+                    vec![
+                        div()
+                            .h(px(24.0))
+                            .px_2()
+                            .rounded_md()
+                            .bg(rgb(0x1e3a5f))
+                            .border_1()
+                            .border_color(rgb(0x3b82f6))
+                            .flex()
+                            .items_center()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(rgb(0xbfdbfe))
+                            .child("Press keys…")
+                            .into_any_element(),
+                    ]
+                } else if keys.is_empty() {
+                    vec![
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x64748b))
+                            .child("Not set")
+                            .into_any_element(),
+                    ]
+                } else {
+                    keys.iter()
+                        .enumerate()
+                        .flat_map(|(k_idx, k)| {
+                            let sep = (k_idx > 0).then(|| {
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(0x64748b))
+                                    .child("or")
+                                    .into_any_element()
+                            });
+                            sep.into_iter()
+                                .chain(std::iter::once(settings_keycap(&crate::keymap::display(k))))
+                        })
+                        .collect()
+                };
+
+                let caption: Option<String> = if recording {
+                    self.shortcut_record_error.clone()
+                } else if !conflicts.is_empty() {
+                    Some(format!("Also used by {}", conflicts.join(", ")))
+                } else {
+                    None
+                };
+                let caption_is_warning = !recording || self.shortcut_record_error.is_some();
+
+                let small_button = |el_id: String, label: &'static str| {
+                    div()
+                        .id(SharedString::from(el_id))
+                        .flex_none()
+                        .px_1p5()
+                        .py_0p5()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .text_xs()
+                        .text_color(rgb(0x94a3b8))
+                        .hover(|st| st.bg(rgb(0x2a3140)).text_color(rgb(0xe2e8f0)))
+                        .child(label)
+                };
+
+                div()
+                    .w_full()
+                    .px_5()
+                    .py_3()
+                    .when(idx > 0, |el| el.border_t_1().border_color(rgb(0x2c3342)))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(rgb(0xf1f5f9))
+                                    .child(spec.label),
+                            )
+                            .when_some(caption, |el, text| {
+                                el.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(if caption_is_warning {
+                                            rgb(0xfbbf24)
+                                        } else {
+                                            rgb(0x94a3b8)
+                                        })
+                                        .child(text),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("shortcut-record-{id}")))
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .p_0p5()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .hover(|st| st.bg(rgb(0x2a3140)))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if this.recording_shortcut == Some(id) {
+                                            this.stop_shortcut_recording(cx);
+                                        } else {
+                                            this.start_shortcut_recording(id, cx);
+                                        }
+                                    }))
+                                    .children(keycaps),
+                            )
+                            .when(recording, |el| {
+                                el.child(
+                                    small_button(format!("shortcut-cancel-{id}"), "Cancel")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.stop_shortcut_recording(cx);
+                                        })),
+                                )
+                            })
+                            .when(!recording && !keys.is_empty(), |el| {
+                                el.child(
+                                    small_button(format!("shortcut-clear-{id}"), "Clear")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.set_shortcut_keys(id, Vec::new(), cx);
+                                        })),
+                                )
+                            })
+                            .when(!recording && customized, |el| {
+                                el.child(
+                                    small_button(format!("shortcut-reset-{id}"), "Reset")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            let defaults =
+                                                spec.defaults.iter().map(|k| k.to_string()).collect();
+                                            this.set_shortcut_keys(id, defaults, cx);
+                                        })),
+                                )
+                            }),
+                    )
+                    .into_any_element()
+            }))
+            .into_any_element()
+    }
+
     fn render_setting_control_row(
         &self,
         key: SettingKey,
@@ -8103,7 +8382,7 @@ impl LaralahApp {
                     },
                     cx,
                 ),
-                Some(crate::shortcut::label("Confirm before closing a scratchpad tab with `⌘ W`.")),
+                Some(crate::keymap::hint_in("close_tab", "Confirm before closing a scratchpad tab with `{}`.")),
             ),
             SettingKey::WelcomeTab => settings_row(
                 "Welcome tab",
@@ -8197,7 +8476,7 @@ impl LaralahApp {
                     },
                     cx,
                 ),
-                Some(crate::shortcut::label("Show the Models & Mailables sidebar. Toggle it any time with `⌘ B`.")),
+                Some(crate::keymap::hint_in("toggle_explorer", "Show the Models & Mailables sidebar. Toggle it any time with `{}`.")),
             ),
             SettingKey::AlwaysOnTop => settings_row(
                 "Always on top",
@@ -8235,7 +8514,7 @@ impl LaralahApp {
                     "settings-auto-eval",
                     s.auto_evaluate_code,
                     "Yes — Automatically evaluate",
-                    crate::shortcut::label("No — Run manually (⌘ R)"),
+                    crate::keymap::hint_in("run_code", "No — Run manually ({})"),
                     |this, val, _, cx| {
                         this.settings.auto_evaluate_code = val;
                         this.auto_run = val && !this.active_target.is_ssh();
@@ -8558,7 +8837,7 @@ impl LaralahApp {
                         }),
                     ))
                     .into_any_element(),
-                Some(crate::shortcut::label("Show the AI assistant sidebar on the right. Toggle it with `⌘ I`.")),
+                Some(crate::keymap::hint_in("toggle_ai_sidebar", "Show the AI assistant sidebar on the right. Toggle it with `{}`.")),
             ),
             SettingKey::AiAutoWrite => settings_row(
                 "Auto-write code to editor",
@@ -8838,7 +9117,7 @@ impl LaralahApp {
                                         cx.notify();
                                     }),
                                 ))
-                                .child(render_shortcuts_card(&search_results.matching_shortcuts)),
+                                .child(self.render_shortcut_editor(&search_results.matching_shortcuts, cx)),
                         )
                     })
                     .into_any_element()
@@ -8849,8 +9128,62 @@ impl LaralahApp {
                 .flex()
                 .flex_col()
                 .gap_2p5()
-                .child(settings_section_header("Keyboard shortcuts"))
-                .child(render_shortcuts_card(shortcut_reference_rows()))
+                .gap_6()
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_2p5()
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .child(settings_section_header("Keyboard shortcuts"))
+                                .when(!self.settings.custom_shortcuts.is_empty(), |el| {
+                                    el.child(
+                                        div()
+                                            .id("shortcuts-reset-all")
+                                            .flex_none()
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .cursor_pointer()
+                                            .text_xs()
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(rgb(0x93c5fd))
+                                            .hover(|st| st.bg(rgb(0x2a3140)))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.reset_all_shortcuts(cx);
+                                            }))
+                                            .child("Reset all to defaults"),
+                                    )
+                                }),
+                        )
+                        .child(
+                            div()
+                                .px_1()
+                                .text_xs()
+                                .text_color(rgb(0x94a3b8))
+                                .child("Click a shortcut, then press the new key combination. Esc cancels."),
+                        )
+                        .child(self.render_shortcut_editor(
+                            &crate::keymap::shortcut_specs().iter().collect::<Vec<_>>(),
+                            cx,
+                        )),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_2p5()
+                        .child(settings_section_header("Built-in"))
+                        .child(render_shortcuts_card(crate::keymap::fixed_shortcut_rows())),
+                )
                 .into_any_element()
         } else {
             let mut sections: Vec<(&'static str, Vec<SettingKey>)> = Vec::new();
@@ -9051,6 +9384,8 @@ impl LaralahApp {
                                     .justify_between()
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.active_settings_tab = tab;
+                                        this.recording_shortcut = None;
+                                        this.shortcut_record_error = None;
                                         if !this.settings_search_input.read(cx).text().is_empty() {
                                             this.settings_search_input.update(cx, |tf, cx| {
                                                 tf.set_text("", cx);
@@ -9181,7 +9516,7 @@ impl LaralahApp {
                                                         .font_family("Menlo")
                                                         .text_xs()
                                                         .text_color(rgb(0x94a3b8))
-                                                        .child(crate::shortcut::label("⌘ F")),
+                                                        .child(crate::keymap::hint("focus_search")),
                                                 )
                                             })
                                             .when(is_searching, |bar| {
@@ -9773,7 +10108,7 @@ impl LaralahApp {
                                             .border_color(rgb(0x3b4558))
                                             .text_xs()
                                             .text_color(rgb(0x94a3b8))
-                                            .child(crate::shortcut::label("⌘F")),
+                                            .child(crate::keymap::hint("focus_search")),
                                     ),
                             )
                             .child(
@@ -12393,7 +12728,7 @@ impl LaralahApp {
             .child(ctx_item(
                 "tab-ctx-close",
                 "Close",
-                if is_target_active { Some(crate::shortcut::label("⌘W")) } else { None },
+                if is_target_active { Some(crate::keymap::hint("close_tab")) } else { None },
                 target_idx < tab_count,
                 Box::new(move |this, cx| this.close_tab_at(target_idx, cx)),
                 cx,

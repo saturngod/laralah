@@ -6,6 +6,7 @@ mod app;
 mod assets;
 mod command_palette;
 mod editor;
+mod keymap;
 mod laravel_lsp;
 mod log_viewer;
 #[cfg(target_os = "macos")]
@@ -21,20 +22,17 @@ mod settings;
 mod ssh;
 mod theme;
 
-use app::{
-    CloseOverlay, CloseScratchTab, FocusLogSearch, FocusSettingsSearch, FocusSshSearch,
-    GraphFitView, GraphZoomIn, GraphZoomOut, LaralahApp, ModeDetailDive, ModeRawCli, ModeTable,
-    NewScratchTab, NextScratchTab, OpenDirectory, PaletteConfirm, PaletteDown, PaletteUp,
-    PrevScratchTab, QuitApp, RunCode, SubmitAiPrompt, ToggleAiSidebar, ToggleLogs, TogglePalette,
-    ToggleSettings, ToggleSidebar, ToggleSql, ToggleSshModal,
-};
+use app::LaralahApp;
+#[cfg(target_os = "macos")]
+use app::{QuitApp, ToggleSettings};
 #[cfg(target_os = "macos")]
 use assets::MACOS_APP_ICON_PNG;
 use assets::EmbeddedAssets;
-use editor::bind_editor_keys;
+#[cfg(target_os = "macos")]
+use gpui::{Menu, MenuItem};
 use gpui::{
-    point, px, size, App, AppContext, Application, Bounds, Focusable, KeyBinding, Menu, MenuItem,
-    TitlebarOptions, WindowBounds, WindowOptions,
+    point, px, size, App, AppContext, Application, Bounds, Focusable, TitlebarOptions,
+    WindowBounds, WindowOptions,
 };
 
 #[cfg(target_os = "macos")]
@@ -90,47 +88,6 @@ fn main() {
         .run(|cx: &mut App| {
             #[cfg(target_os = "macos")]
             configure_macos_app(cx);
-
-            bind_editor_keys(cx);
-            selectable::bind_selectable_keys(cx);
-            cx.bind_keys([
-                KeyBinding::new("secondary-q", QuitApp, None),
-                KeyBinding::new("secondary-,", ToggleSettings, None),
-                KeyBinding::new("secondary-i", ToggleAiSidebar, None),
-                KeyBinding::new("secondary-b", ToggleSidebar, None),
-                KeyBinding::new("secondary-t", NewScratchTab, None),
-                KeyBinding::new("secondary-w", CloseScratchTab, None),
-                KeyBinding::new("secondary-shift-[", PrevScratchTab, None),
-                KeyBinding::new("ctrl-shift-tab", PrevScratchTab, None),
-                KeyBinding::new("secondary-shift-]", NextScratchTab, None),
-                KeyBinding::new("ctrl-tab", NextScratchTab, None),
-                KeyBinding::new("secondary-k", ToggleSshModal, None),
-                KeyBinding::new("secondary-o", OpenDirectory, None),
-                KeyBinding::new("secondary-r", RunCode, None),
-                KeyBinding::new("secondary-p", TogglePalette, None),
-                KeyBinding::new("secondary-shift-p", TogglePalette, None),
-                KeyBinding::new("secondary-l", ToggleLogs, None),
-                KeyBinding::new("secondary-s", ToggleSql, None),
-                KeyBinding::new("secondary-1", ModeDetailDive, None),
-                KeyBinding::new("secondary-2", ModeTable, None),
-                KeyBinding::new("secondary-3", ModeRawCli, None),
-                KeyBinding::new("escape", CloseOverlay, None),
-                KeyBinding::new("up", PaletteUp, Some("CommandPalette")),
-                KeyBinding::new("down", PaletteDown, Some("CommandPalette")),
-                KeyBinding::new("enter", PaletteConfirm, Some("CommandPalette")),
-                KeyBinding::new("enter", SubmitAiPrompt, Some("AiComposer")),
-                KeyBinding::new("secondary-enter", SubmitAiPrompt, Some("AiComposer")),
-                KeyBinding::new("secondary-f", FocusLogSearch, Some("LogViewer")),
-                KeyBinding::new("secondary-f", FocusSettingsSearch, Some("SettingsModal")),
-                KeyBinding::new("secondary-f", FocusSshSearch, Some("SshModal")),
-                KeyBinding::new("secondary-=", GraphZoomIn, Some("ObjectGraph")),
-                KeyBinding::new("secondary-+", GraphZoomIn, Some("ObjectGraph")),
-                KeyBinding::new("=", GraphZoomIn, Some("ObjectGraph")),
-                KeyBinding::new("secondary--", GraphZoomOut, Some("ObjectGraph")),
-                KeyBinding::new("-", GraphZoomOut, Some("ObjectGraph")),
-                KeyBinding::new("secondary-0", GraphFitView, Some("ObjectGraph")),
-                KeyBinding::new("0", GraphFitView, Some("ObjectGraph")),
-            ]);
 
             let bounds = Bounds::centered(None, size(px(1220.0), px(760.0)), cx);
             let window = cx

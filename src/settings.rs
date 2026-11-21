@@ -1,3 +1,4 @@
+use crate::keymap::{ShortcutSpec, shortcut_specs};
 use crate::runner::resolve_php_binary;
 pub use crate::theme::ThemeMode;
 use serde::{Deserialize, Serialize};
@@ -157,6 +158,10 @@ pub struct AppSettings {
     pub default_working_directory: Option<String>,
     pub collision_enabled: bool,
     pub autocompletion_service_port: u16,
+
+    // Shortcuts: shortcut id -> keystrokes (gpui syntax). Missing ids use the
+    // defaults; an empty list means the shortcut is unbound.
+    pub custom_shortcuts: HashMap<String, Vec<String>>,
 }
 
 pub fn default_ai_enabled_agents() -> HashMap<String, bool> {
@@ -219,6 +224,8 @@ impl Default for AppSettings {
             default_working_directory: None,
             collision_enabled: true,
             autocompletion_service_port: 3050,
+
+            custom_shortcuts: HashMap::new(),
         }
     }
 }
@@ -310,30 +317,6 @@ pub fn available_editor_fonts() -> &'static [&'static str] {
         "Fira Code",
         "Monaco",
         "Courier New",
-    ]
-}
-
-pub fn shortcut_reference_rows() -> &'static [(&'static str, &'static str)] {
-    // Alternatives are separated by " / " and rendered as separate keycaps.
-    &[
-        ("Run code", "⌘R"),
-        ("Command palette", "⌘P / ⇧⌘P"),
-        ("Open settings", "⌘,"),
-        ("New scratchpad tab", "⌘T"),
-        ("Close scratchpad tab", "⌘W"),
-        ("Open local folder", "⌘O"),
-        ("SSH connections", "⌘K"),
-        ("Toggle AI assistant sidebar", "⌘I"),
-        ("Toggle project explorer", "⌘B"),
-        ("Toggle logs viewer", "⌘L"),
-        ("Toggle inline SQL cards", "⌘S"),
-        ("Detail Dive view", "⌘1"),
-        ("Toggle table preview", "⌘2"),
-        ("Toggle CLI output", "⌘3"),
-        ("Focus search (settings, logs, SSH)", "⌘F"),
-        ("Trigger autocomplete", "⌃Space"),
-        ("Zoom object graph in / out / reset", "⌘+ / ⌘- / ⌘0"),
-        ("Close modal or sheet", "Esc"),
     ]
 }
 
@@ -644,7 +627,7 @@ pub fn all_setting_specs() -> &'static [SettingMeta] {
 #[derive(Clone, Debug)]
 pub struct SettingsSearchResults {
     pub matching_specs: Vec<SettingMeta>,
-    pub matching_shortcuts: Vec<(&'static str, &'static str)>,
+    pub matching_shortcuts: Vec<&'static ShortcutSpec>,
 }
 
 impl SettingsSearchResults {
@@ -736,7 +719,7 @@ pub fn search_settings(
     if tokens.is_empty() {
         return SettingsSearchResults {
             matching_specs: all_setting_specs().to_vec(),
-            matching_shortcuts: shortcut_reference_rows().to_vec(),
+            matching_shortcuts: shortcut_specs().iter().collect(),
         };
     }
 
@@ -757,17 +740,28 @@ pub fn search_settings(
         })
         .collect();
 
-    let matching_shortcuts = shortcut_reference_rows()
+    let matching_shortcuts = shortcut_specs()
         .iter()
-        .copied()
-        .filter(|(action, keys)| {
-            let normalized_keys = keys
+        .filter(|spec| {
+            let keys = crate::keymap::effective_keys(spec, &settings.custom_shortcuts);
+            let raw = keys
+                .join(" ")
+                .replace('-', " ")
+                .replace("secondary", "secondary cmd command ctrl control");
+            let shown = keys
+                .iter()
+                .map(|k| crate::keymap::display(k))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let normalized_keys = shown
                 .replace('⌘', "cmd command ")
                 .replace('⇧', "shift ")
-                .replace('⌃', "ctrl control ");
+                .replace('⌃', "ctrl control ")
+                .replace('⌥', "alt option ")
+                .replace('+', " ");
             let haystack = format!(
-                "shortcuts keyboard hotkey keybinding {} {} {}",
-                action, keys, normalized_keys
+                "shortcuts keyboard hotkey keybinding customize rebind {} {} {} {}",
+                spec.label, raw, shown, normalized_keys
             )
             .to_lowercase();
             tokens.iter().all(|tok| haystack.contains(tok))
@@ -853,7 +847,7 @@ mod tests {
             sc_res
                 .matching_shortcuts
                 .iter()
-                .any(|(name, _)| name.to_lowercase().contains("logs"))
+                .any(|spec| spec.label.to_lowercase().contains("logs"))
         );
 
         // Explorer search finds Project Explorer in General > Appearance

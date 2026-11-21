@@ -95,7 +95,6 @@ pub fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("secondary-z", Undo, Some("EditorInput")),
         KeyBinding::new("secondary-shift-z", Redo, Some("EditorInput")),
         KeyBinding::new("secondary-y", Redo, Some("EditorInput")),
-        KeyBinding::new("ctrl-space", TriggerCompletion, Some("CodeEditor")),
         KeyBinding::new("escape", DismissCompletion, Some("CompletionOpen")),
         KeyBinding::new("escape", DismissContextMenu, Some("ContextMenuOpen")),
     ]);
