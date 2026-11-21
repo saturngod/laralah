@@ -123,6 +123,9 @@ impl AssetSource for EmbeddedAssets {
             "icons/chevron-right.svg" => Some(
                 br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>"#,
             ),
+            "icons/menu.svg" => Some(
+                br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>"#,
+            ),
             _ => None,
         };
         Ok(bytes.map(Cow::Borrowed))
@@ -168,6 +171,7 @@ impl AssetSource for EmbeddedAssets {
             "icons/check.svg".into(),
             "icons/chevron-down.svg".into(),
             "icons/chevron-right.svg".into(),
+            "icons/menu.svg".into(),
         ])
     }
 }
@@ -199,6 +203,7 @@ mod tests {
             "icons/check.svg",
             "icons/chevron-down.svg",
             "icons/chevron-right.svg",
+            "icons/menu.svg",
         ] {
             assert!(
                 EmbeddedAssets.load(icon).unwrap().is_some(),

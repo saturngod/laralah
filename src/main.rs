@@ -3,9 +3,11 @@
 
 mod ai;
 mod app;
+mod app_menu;
 mod assets;
 mod command_palette;
 mod editor;
+mod formatter;
 mod keymap;
 mod laravel_lsp;
 mod log_viewer;
@@ -24,12 +26,8 @@ mod theme;
 
 use app::LaralahApp;
 #[cfg(target_os = "macos")]
-use app::{QuitApp, ToggleSettings};
-#[cfg(target_os = "macos")]
 use assets::MACOS_APP_ICON_PNG;
 use assets::EmbeddedAssets;
-#[cfg(target_os = "macos")]
-use gpui::{Menu, MenuItem};
 use gpui::{
     point, px, size, App, AppContext, Application, Bounds, Focusable, TitlebarOptions,
     WindowBounds, WindowOptions,
@@ -68,14 +66,9 @@ fn configure_macos_app(cx: &mut App) {
         }
     }
 
-    cx.set_menus(vec![Menu {
-        name: "Laralah".into(),
-        items: vec![
-            MenuItem::action("Settings...", ToggleSettings),
-            MenuItem::separator(),
-            MenuItem::action("Quit Laralah", QuitApp),
-        ],
-    }]);
+    // The menu bar itself is installed with the keymap (see `keymap::apply`), so
+    // its shortcut labels follow the user's custom bindings.
+    crate::app_menu::install_native(cx);
 }
 
 fn main() {

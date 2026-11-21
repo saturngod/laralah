@@ -62,6 +62,7 @@ actions!(
     [
         QuitApp,
         RunCode,
+        FormatCode,
         OpenDirectory,
         ToggleSidebar,
         ToggleAiSidebar,
@@ -93,6 +94,18 @@ actions!(
 
 /// Left inset for custom top bars: room for the traffic lights on macOS, a plain gutter elsewhere.
 const TITLEBAR_LEFT_INSET: f32 = if cfg!(target_os = "macos") { 80.0 } else { 12.0 };
+
+/// Windows and Linux get the app menu from a hamburger button in the top bar;
+/// macOS uses the native menu bar. Debug builds can force the hamburger on with
+/// `LARALAH_HAMBURGER_MENU=1` to work on it from a Mac (it shows the Windows/Linux
+/// layout there too).
+fn show_hamburger_menu() -> bool {
+    !cfg!(target_os = "macos")
+        || (cfg!(debug_assertions) && std::env::var_os("LARALAH_HAMBURGER_MENU").is_some())
+}
+
+/// Where the hamburger button sits in the top bar.
+const APP_MENU_BUTTON_LEFT: f32 = TITLEBAR_LEFT_INSET;
 
 // Clean Light Studio Palette (matching reference screenshot)
 const BG_WINDOW: u32 = 0xffffff;
@@ -311,6 +324,15 @@ pub struct LaralahApp {
     ai_tables_cache: HashMap<String, Vec<String>>,
     ai_editor_undo_banner: bool,
     ai_copied_msg_id: Option<u64>,
+    /// Result of the last "Format code" run: message and whether it's an error.
+    format_status: Option<(String, bool)>,
+    format_seq: u64,
+    is_formatting: bool,
+    app_menu_open: bool,
+    /// Index of the top-level menu whose items are showing.
+    app_menu_hover: Option<usize>,
+    /// What had focus when the menu opened; menu commands are sent there.
+    app_menu_return_focus: Option<FocusHandle>,
 }
 
 impl Focusable for LaralahApp {
@@ -436,6 +458,7 @@ impl LaralahApp {
             if ver != this.last_editor_version {
                 this.last_editor_version = ver;
                 this.ai_editor_undo_banner = false;
+                this.format_status = None;
                 this.schedule_auto_run(cx);
             }
         })
@@ -779,6 +802,12 @@ impl LaralahApp {
             ai_tables_cache: HashMap::new(),
             ai_editor_undo_banner: false,
             ai_copied_msg_id: None,
+            format_status: None,
+            format_seq: 0,
+            is_formatting: false,
+            app_menu_open: false,
+            app_menu_hover: None,
+            app_menu_return_focus: None,
         };
         crate::keymap::apply(cx, &app.settings.custom_shortcuts);
         let weak = cx.weak_entity();
@@ -2470,6 +2499,11 @@ impl LaralahApp {
                 self.focus_editor_next_frame = true;
                 self.run_evaluation(cx);
             }
+            PaletteAction::FormatCode => {
+                self.show_landing = false;
+                self.focus_editor_next_frame = true;
+                self.format_active_code(cx);
+            }
             PaletteAction::ToggleAutoRun => self.toggle_auto_run(cx),
             PaletteAction::SwitchOutputMode(mode) => {
                 self.show_landing = false;
@@ -2690,16 +2724,312 @@ impl LaralahApp {
         cx.quit();
     }
     fn on_run(&mut self, _: &RunCode, _: &mut Window, cx: &mut Context<Self>) {
-        if self.show_landing {
-            if let Some(first_proj) = self.projects.first().cloned() {
-                self.open_project_path(first_proj, cx);
-            } else {
-                self.open_directory_dialog(cx);
-            }
-        } else {
-            self.run_evaluation(cx);
+        self.run_evaluation(cx);
+    }
+    fn on_format_code(&mut self, _: &FormatCode, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.show_landing {
+            self.format_active_code(cx);
         }
     }
+
+    /// Reformats the active scratchpad with Pint when available, otherwise with
+    /// the built-in re-indenter. One undo step reverts it.
+    fn format_active_code(&mut self, cx: &mut Context<Self>) {
+        if self.is_formatting {
+            return;
+        }
+        let code = self.editor.read(cx).text().to_string();
+        if code.trim().is_empty() {
+            return;
+        }
+        let project_dir = self.active_target.local_project_dir().map(str::to_string);
+        let php_bin = self.settings.php_binary.clone();
+        let indent = self.settings.indentation_size;
+        self.format_seq = self.format_seq.wrapping_add(1);
+        let seq = self.format_seq;
+        self.is_formatting = true;
+        self.format_status = None;
+        cx.notify();
+
+        let original = code.clone();
+        cx.spawn(async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::formatter::format_php(&original, project_dir.as_deref(), &php_bin, indent)
+                })
+                .await;
+            this.update(cx, |app, cx| {
+                app.is_formatting = false;
+                if app.format_seq != seq {
+                    return;
+                }
+                // The buffer changed while formatting ran: don't overwrite the edit.
+                if app.editor.read(cx).text() != code {
+                    cx.notify();
+                    return;
+                }
+                let changed = app
+                    .editor
+                    .update(cx, |ed, cx| ed.apply_formatted_text(outcome.text, cx));
+                app.last_editor_version = app.editor.read(cx).edit_version;
+                app.focus_editor_next_frame = true;
+                let tool = match outcome.used {
+                    crate::formatter::FormatterUsed::Pint => "Pint",
+                    crate::formatter::FormatterUsed::BuiltIn => "built-in formatter",
+                };
+                let (msg, is_error) = match (&outcome.pint_error, changed) {
+                    (Some(err), true) => (format!("Re-indented only · Pint: {err}"), true),
+                    (Some(err), false) => (format!("Pint: {err}"), true),
+                    (None, true) => (format!("✓ Formatted with {tool}"), false),
+                    (None, false) => (format!("✓ Already formatted ({tool})"), false),
+                };
+                app.format_status = Some((msg, is_error));
+                cx.notify();
+
+                // Success notes fade on their own; errors stay until the next edit.
+                if !is_error {
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(Duration::from_secs(4)).await;
+                        this.update(cx, |app, cx| {
+                            if app.format_seq == seq && app.format_status.as_ref().is_some_and(|s| !s.1) {
+                                app.format_status = None;
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                    })
+                    .detach();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    // ---- Hamburger menu (Windows / Linux) ----
+
+    fn render_app_menu_button(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let open = self.app_menu_open;
+        div()
+            .id("app-menu-button")
+            // Keeps the top bar's window-drag area (Windows hit-testing) from
+            // claiming clicks on the button.
+            .occlude()
+            .flex_none()
+            .size(px(28.0))
+            .rounded_md()
+            .bg(if open { rgb(0xe2e8f0) } else { rgba(0x00000000) })
+            .hover(|s| s.bg(rgb(BG_HOVER)))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(!open, |el| el.tooltip(|_, cx| TextTooltip::view("Menu", cx)))
+            // Opens on press, like a menu bar, and remembers what had focus so
+            // Edit commands go back to the editor or field the user was in.
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    if this.app_menu_open {
+                        this.close_app_menu(cx);
+                    } else {
+                        this.app_menu_return_focus = window.focused(cx);
+                        this.app_menu_open = true;
+                        this.app_menu_hover = None;
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(
+                svg()
+                    .path("icons/menu.svg")
+                    .size(px(16.0))
+                    .text_color(if open { rgb(0x0f172a) } else { rgb(TEXT_SECONDARY) }),
+            )
+            .into_any_element()
+    }
+
+    fn close_app_menu(&mut self, cx: &mut Context<Self>) {
+        if self.app_menu_open {
+            self.app_menu_open = false;
+            self.app_menu_hover = None;
+            self.app_menu_return_focus = None;
+            cx.notify();
+        }
+    }
+
+    fn render_app_menu_popup(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if !self.app_menu_open {
+            return None;
+        }
+        const ROW_H: f32 = 28.0;
+        let menus = crate::app_menu::app_menus(crate::app_menu::MenuStyle::Hamburger);
+        let hover = self.app_menu_hover.filter(|i| *i < menus.len());
+
+        let top_rows = menus.iter().enumerate().map(|(idx, menu)| {
+            let active = hover == Some(idx);
+            div()
+                .id(SharedString::from(format!("app-menu-top-{idx}")))
+                .h(px(ROW_H))
+                .mx(px(4.0))
+                .px(px(10.0))
+                .rounded_sm()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(24.0))
+                .cursor_pointer()
+                .hover(|s| s.bg(rgb(BG_HOVER)))
+                .when(active, |el| el.bg(rgb(BG_HOVER)))
+                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    if *hovered && this.app_menu_hover != Some(idx) {
+                        this.app_menu_hover = Some(idx);
+                        cx.notify();
+                    }
+                }))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _: &gpui::MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.app_menu_hover = Some(idx);
+                        cx.notify();
+                    }),
+                )
+                .child(menu.name)
+                .child(
+                    svg()
+                        .path("icons/chevron-right.svg")
+                        .size(px(12.0))
+                        .text_color(rgb(TEXT_MUTED)),
+                )
+        })
+        .collect::<Vec<_>>();
+
+        let panel = || {
+            div()
+                // Hide what's underneath from the pointer, so cards behind the
+                // menu don't show hover effects.
+                .occlude()
+                .min_w(px(150.0))
+                .py(px(4.0))
+                .bg(rgb(0xffffff))
+                .border_1()
+                .border_color(rgb(BORDER_CARD))
+                .rounded_md()
+                .shadow_lg()
+                .text_sm()
+                .text_color(rgb(TEXT_MAIN))
+                .flex()
+                .flex_col()
+        };
+
+        let submenu = hover.map(|idx| {
+            let rows = menus[idx].entries.iter().enumerate().map(|(row, entry)| {
+                let crate::app_menu::AppMenuEntry::Item(item) = *entry else {
+                    return div()
+                        .h(px(1.0))
+                        .my(px(4.0))
+                        .mx(px(8.0))
+                        .bg(rgb(BORDER_CARD))
+                        .into_any_element();
+                };
+                // Same test the macOS menu bar uses: is anything in the focused
+                // view's path handling this command right now?
+                let enabled = window.is_action_available((item.build)().as_ref(), cx);
+                div()
+                    .id(SharedString::from(format!("app-menu-item-{idx}-{row}")))
+                    .h(px(ROW_H))
+                    .mx(px(4.0))
+                    .px(px(10.0))
+                    .rounded_sm()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(28.0))
+                    .text_color(rgb(if enabled { TEXT_MAIN } else { TEXT_MUTED }))
+                    .when(enabled, |el| {
+                        el.cursor_pointer().hover(|s| s.bg(rgb(BG_HOVER))).on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                let target = this.app_menu_return_focus.take();
+                                this.close_app_menu(cx);
+                                let action = (item.build)();
+                                // Dispatch after this update so handlers on this view can
+                                // run, and from the element that had focus when the menu
+                                // opened.
+                                match target {
+                                    Some(handle) => window.defer(cx, move |window, cx| {
+                                        window.focus(&handle);
+                                        handle.dispatch_action(action.as_ref(), window, cx);
+                                    }),
+                                    None => window.dispatch_action(action, cx),
+                                }
+                            }),
+                        )
+                    })
+                    .when(!enabled, |el| {
+                        el.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    })
+                    .child(item.label)
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(if enabled { TEXT_SECONDARY } else { TEXT_MUTED }))
+                            .child(item.shortcut_label()),
+                    )
+                    .into_any_element()
+            });
+            panel()
+                .id("app-menu-submenu")
+                .mt(px(idx as f32 * ROW_H))
+                .min_w(px(230.0))
+                .children(rows)
+        });
+
+        Some(
+            gpui::deferred(
+                gpui::anchored()
+                    .position(gpui::point(px(APP_MENU_BUTTON_LEFT), px(40.0)))
+                    .snap_to_window_with_margin(px(8.0))
+                    .child(
+                        div()
+                            .id("app-menu")
+                            .flex()
+                            .flex_row()
+                            .items_start()
+                            .gap(px(2.0))
+                            .cursor_default()
+                            .on_mouse_down_out(cx.listener(
+                                |this, event: &gpui::MouseDownEvent, _, cx| {
+                                    // The button toggles the menu itself.
+                                    let p = event.position;
+                                    let on_button = p.x < px(APP_MENU_BUTTON_LEFT + 30.0)
+                                        && p.y < px(42.0);
+                                    if !on_button {
+                                        this.close_app_menu(cx);
+                                    }
+                                },
+                            ))
+                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                            .child(panel().id("app-menu-top").children(top_rows))
+                            .children(submenu),
+                    ),
+            )
+            // Above resize sashes (5) and the other popups (20–30).
+            .with_priority(40)
+            .into_any_element(),
+        )
+    }
+
     fn on_open_directory(&mut self, _: &OpenDirectory, _: &mut Window, cx: &mut Context<Self>) {
         self.open_directory_dialog(cx);
     }
@@ -2841,6 +3171,10 @@ impl LaralahApp {
         self.toggle_cli_mode(cx);
     }
     fn on_close_overlay(&mut self, _: &CloseOverlay, window: &mut Window, cx: &mut Context<Self>) {
+        if self.app_menu_open {
+            self.close_app_menu(cx);
+            return;
+        }
         if self.ai_effort_menu_open {
             self.ai_effort_menu_open = false;
             cx.notify();
@@ -2937,6 +3271,16 @@ impl LaralahApp {
                 .justify_center()
                 .window_control_area(gpui::WindowControlArea::Drag)
                 .on_mouse_down(gpui::MouseButton::Left, titlebar_double_click)
+                .relative()
+                .when(show_hamburger_menu(), |bar| {
+                    bar.child(
+                        div()
+                            .absolute()
+                            .left(px(APP_MENU_BUTTON_LEFT))
+                            .top(px(6.0))
+                            .child(self.render_app_menu_button(cx)),
+                    )
+                })
                 .child(
                     div()
                         .text_xs()
@@ -3009,10 +3353,17 @@ impl LaralahApp {
                     .flex_row()
                     .items_center()
                     .gap_1p5()
+                    .when(show_hamburger_menu(), |row| row.child(self.render_app_menu_button(cx)))
                     .when(self.settings.show_explorer, |row| {
                         row.child(
                             div()
                                 .id("top-toggle-sidebar")
+                                .tooltip(|_, cx| {
+                                    TextTooltip::view(
+                                        crate::keymap::hint_in("toggle_explorer", "Toggle project explorer ({})"),
+                                        cx,
+                                    )
+                                })
                                 .size(px(28.0))
                                 .rounded_md()
                                 .bg(if self.show_sidebar {
@@ -3582,6 +3933,7 @@ impl LaralahApp {
                                     t.child(
                                         div()
                                             .id(SharedString::from(format!("close-tab-{idx}")))
+                                            .tooltip(|_, cx| TextTooltip::view("Close tab", cx))
                                             .px_1()
                                             .rounded_sm()
                                             .hover(|s| {
@@ -3602,6 +3954,7 @@ impl LaralahApp {
                 .child(
                     div()
                         .id("new-scratch-tab-btn")
+                        .tooltip(|_, cx| TextTooltip::view(crate::keymap::hint_in("new_tab", "New tab ({})"), cx))
                         .flex_none()
                         .size(px(24.0))
                         .rounded_md()
@@ -3629,6 +3982,7 @@ impl LaralahApp {
                             .child(
                                 div()
                                     .id("titlebar-all-tabs-btn")
+                                    .tooltip(|_, cx| TextTooltip::view("All tabs", cx))
                                     .h(px(24.0))
                                     .px_1p5()
                                     .rounded_md()
@@ -3762,6 +4116,7 @@ impl LaralahApp {
                                                     .id(SharedString::from(format!(
                                                         "all-tabs-close-{idx}"
                                                     )))
+                                                    .tooltip(|_, cx| TextTooltip::view("Close tab", cx))
                                                     .flex_none()
                                                     .px_1()
                                                     .rounded_sm()
@@ -4038,6 +4393,7 @@ impl LaralahApp {
                     .child(
                         div()
                             .id("explorer-close-btn")
+                            .tooltip(|_, cx| TextTooltip::view("Hide explorer", cx))
                             .px_1()
                             .rounded_sm()
                             .hover(|s| s.bg(rgb(0xe2e8f0)))
@@ -4089,6 +4445,7 @@ impl LaralahApp {
                                 bar.child(
                                     div()
                                         .id("explorer-filter-clear")
+                                        .tooltip(|_, cx| TextTooltip::view("Clear filter", cx))
                                         .px_1()
                                         .rounded_sm()
                                         .hover(|s| s.bg(rgb(0xf1f5f9)))
@@ -4603,6 +4960,7 @@ impl LaralahApp {
                                     .child(
                                         div()
                                             .id("land-settings-btn")
+                                            .tooltip(|_, cx| TextTooltip::view(crate::keymap::hint_in("open_settings", "Settings ({})"), cx))
                                             .size(px(32.0))
                                             .rounded_lg()
                                             .bg(rgb(0xffffff))
@@ -5083,6 +5441,55 @@ impl LaralahApp {
                             .flex_row()
                             .items_center()
                             .gap_2()
+                            .when_some(self.format_status.clone(), |row, (msg, is_error)| {
+                                let (bg, border, fg) = if is_error {
+                                    (0xfef2f2, 0xfecaca, 0xb91c1c)
+                                } else {
+                                    (0xecfdf5, 0xa7f3d0, 0x047857)
+                                };
+                                row.child(
+                                    div()
+                                        .id("editor-format-status")
+                                        .max_w(px(360.0))
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded_sm()
+                                        .bg(rgb(bg))
+                                        .border_1()
+                                        .border_color(rgb(border))
+                                        .text_xs()
+                                        .text_color(rgb(fg))
+                                        .tooltip({
+                                            let msg = msg.clone();
+                                            move |_, cx| TextTooltip::view(msg.clone(), cx)
+                                        })
+                                        .child(msg),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .id("editor-format-code")
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_sm()
+                                    .hover(|s| s.bg(rgb(BG_HOVER)))
+                                    .cursor_pointer()
+                                    .text_xs()
+                                    .text_color(rgb(if self.is_formatting { TEXT_MUTED } else { TEXT_SECONDARY }))
+                                    .tooltip(|_, cx| {
+                                        TextTooltip::view(
+                                            crate::keymap::hint_in("format_code", "Format code ({})"),
+                                            cx,
+                                        )
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.format_active_code(cx);
+                                    }))
+                                    .child(if self.is_formatting { "Formatting…" } else { "{ } Format" }),
+                            )
                             .when(self.ai_editor_undo_banner, |row| {
                                 row.child(
                                     div()
@@ -10549,6 +10956,7 @@ impl LaralahApp {
                             .child(
                                 div()
                                     .id(SharedString::from(format!("ssh-del-{}", prof.id)))
+                                    .tooltip(|_, cx| TextTooltip::view("Delete connection", cx))
                                     .flex_none()
                                     .p_1p5()
                                     .rounded_md()
@@ -12312,6 +12720,9 @@ impl LaralahApp {
                                         .child(
                                             div()
                                                 .id("ssh-toggle-passphrase-mask")
+                                                .tooltip(move |_, cx| {
+                                                    TextTooltip::view(if is_masked { "Show passphrase" } else { "Hide passphrase" }, cx)
+                                                })
                                                 .p_1()
                                                 .rounded_sm()
                                                 .hover(|s| s.bg(rgb(0x30394a)))
@@ -12834,15 +13245,11 @@ impl Render for LaralahApp {
                 }),
             )
             .on_action(cx.listener(Self::on_quit))
-            .on_action(cx.listener(Self::on_run))
             .on_action(cx.listener(Self::on_open_directory))
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_ai_sidebar))
             .on_action(cx.listener(Self::on_submit_ai_prompt))
             .on_action(cx.listener(Self::on_new_tab))
-            .on_action(cx.listener(Self::on_close_tab))
-            .on_action(cx.listener(Self::on_prev_tab))
-            .on_action(cx.listener(Self::on_next_tab))
             .on_action(cx.listener(Self::on_toggle_settings))
             .on_action(cx.listener(Self::on_toggle_ssh_modal))
             .on_action(cx.listener(Self::on_toggle_palette))
@@ -12850,15 +13257,27 @@ impl Render for LaralahApp {
             .on_action(cx.listener(Self::on_focus_log_search))
             .on_action(cx.listener(Self::on_focus_settings_search))
             .on_action(cx.listener(Self::on_focus_ssh_search))
-            .on_action(cx.listener(Self::on_toggle_sql))
-            .on_action(cx.listener(Self::on_mode_detail))
-            .on_action(cx.listener(Self::on_mode_table))
-            .on_action(cx.listener(Self::on_mode_raw))
+            // Commands that only apply with a project open. Registering them
+            // conditionally is also what greys them out in both app menus.
+            .when(!self.show_landing, |root| {
+                root.on_action(cx.listener(Self::on_run))
+                    .on_action(cx.listener(Self::on_format_code))
+                    .on_action(cx.listener(Self::on_close_tab))
+                    .on_action(cx.listener(Self::on_toggle_sql))
+                    .on_action(cx.listener(Self::on_mode_detail))
+                    .on_action(cx.listener(Self::on_mode_table))
+                    .on_action(cx.listener(Self::on_mode_raw))
+            })
+            .when(!self.show_landing && self.tabs.len() > 1, |root| {
+                root.on_action(cx.listener(Self::on_prev_tab))
+                    .on_action(cx.listener(Self::on_next_tab))
+            })
             .on_action(cx.listener(Self::on_close_overlay))
             .on_action(cx.listener(Self::on_graph_zoom_in))
             .on_action(cx.listener(Self::on_graph_zoom_out))
             .on_action(cx.listener(Self::on_graph_fit))
             .child(self.render_titlebar(cx))
+            .children(self.render_app_menu_popup(window, cx))
             .child(
                 div()
                     .flex_1()
@@ -13032,6 +13451,7 @@ fn dark_close_button(
 ) -> impl IntoElement {
     div()
         .id(SharedString::from(id.to_string()))
+        .tooltip(|_, cx| TextTooltip::view("Close", cx))
         .size(px(22.0))
         .rounded_sm()
         .bg(rgb(0x283040))
@@ -13063,6 +13483,7 @@ fn light_close_button(
 ) -> impl IntoElement {
     div()
         .id(SharedString::from(id.to_string()))
+        .tooltip(|_, cx| TextTooltip::view("Close", cx))
         .size(px(24.0))
         .rounded_md()
         .bg(rgb(BG_CARD))
@@ -13468,6 +13889,36 @@ fn macos_menu_item(
         )
         .child(div().flex_1().truncate().child(label.to_string()))
         .into_any_element()
+}
+
+/// Small dark hover label shared by every icon-only button.
+struct TextTooltip {
+    text: SharedString,
+}
+
+impl TextTooltip {
+    fn view(text: impl Into<SharedString>, cx: &mut App) -> gpui::AnyView {
+        let text = text.into();
+        cx.new(|_| Self { text }).into()
+    }
+}
+
+impl Render for TextTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _scope = crate::theme::enter_scope(crate::theme::Scope::Fixed);
+        div()
+            .px_2p5()
+            .py_1()
+            .rounded_md()
+            .bg(rgb(0x1f2430))
+            .border_1()
+            .border_color(rgb(0x334155))
+            .shadow_md()
+            .text_xs()
+            .whitespace_nowrap()
+            .text_color(rgb(0xe2e8f0))
+            .child(self.text.clone())
+    }
 }
 
 fn rail_icon_button(

@@ -18,6 +18,7 @@ pub enum PaletteAction {
     SwitchProject(String),
     SwitchTarget(ExecutionTarget),
     RunCode,
+    FormatCode,
     ToggleAutoRun,
     SwitchOutputMode(OutputMode),
     OpenLogViewer,
@@ -205,6 +206,14 @@ pub fn filter_palette_entries(
             subtitle: "Execute active scratchpad tab in current Laravel environment".to_string(),
             shortcut: crate::keymap::hint("run_code"),
             action: PaletteAction::RunCode,
+        },
+        PaletteEntry {
+            kind: PaletteItemKind::Command,
+            prefix_tag: ">",
+            title: "Format Code".to_string(),
+            subtitle: "Reformat the active tab with Laravel Pint (or re-indent when Pint isn't installed)".to_string(),
+            shortcut: crate::keymap::hint("format_code"),
+            action: PaletteAction::FormatCode,
         },
         PaletteEntry {
             kind: PaletteItemKind::Command,

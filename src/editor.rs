@@ -138,6 +138,7 @@ enum EditCommand {
     Copy,
     Paste,
     SelectAll,
+    FormatCode,
 }
 
 impl EditCommand {
@@ -149,6 +150,7 @@ impl EditCommand {
             Self::Copy => "Copy",
             Self::Paste => "Paste",
             Self::SelectAll => "Select All",
+            Self::FormatCode => "Format Code",
         }
     }
 
@@ -161,6 +163,7 @@ impl EditCommand {
             Self::Copy => "⌘C",
             Self::Paste => "⌘V",
             Self::SelectAll => "⌘A",
+            Self::FormatCode => crate::keymap::hint("format_code"),
         }
     }
 
@@ -173,6 +176,7 @@ impl EditCommand {
             Self::Copy => "Ctrl+C",
             Self::Paste => "Ctrl+V",
             Self::SelectAll => "Ctrl+A",
+            Self::FormatCode => crate::keymap::hint("format_code"),
         }
     }
 }
@@ -247,6 +251,7 @@ fn render_context_menu<V: ContextMenuHost>(
             .child(
                 div()
                     .id("editor-context-menu")
+                    .occlude()
                     .min_w(px(190.0))
                     .py(px(4.0))
                     .bg(rgb(0xffffff))
@@ -266,7 +271,8 @@ fn render_context_menu<V: ContextMenuHost>(
                     .children(items),
             ),
     )
-    .with_priority(1)
+    // Above the panel resize sashes (5).
+    .with_priority(20)
     .into_any_element()
 }
 
@@ -526,6 +532,26 @@ impl CodeEditor {
         self.completion_popup = None;
         self.scrollbar_drag = None;
         self.notify_text_edited(cx);
+    }
+
+    /// Replaces the buffer with a reformatted version of itself as one undo step,
+    /// keeping the caret next to the same code and the scroll position.
+    pub fn apply_formatted_text(&mut self, formatted: String, cx: &mut Context<Self>) -> bool {
+        let formatted = formatted.replace("\r\n", "\n").replace('\r', "\n");
+        if formatted == self.text {
+            return false;
+        }
+        let caret = crate::formatter::map_offset(&self.text, &formatted, self.cursor_offset());
+        self.push_undo();
+        self.text = formatted;
+        let caret = clamp_char_boundary(&self.text, caret);
+        self.selected_range = caret..caret;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.preferred_col = None;
+        self.completion_popup = None;
+        self.notify_text_edited(cx);
+        true
     }
 
     pub fn undo_once(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1619,6 +1645,8 @@ impl CodeEditor {
                 Some((EditCommand::Paste, clipboard_has_text(cx))),
                 None,
                 Some((EditCommand::SelectAll, !self.text.is_empty())),
+                None,
+                Some((EditCommand::FormatCode, !self.text.trim().is_empty())),
             ],
         });
         cx.notify();
@@ -1634,6 +1662,9 @@ impl ContextMenuHost for CodeEditor {
             EditCommand::Copy => self.copy(&Copy, window, cx),
             EditCommand::Paste => self.paste(&Paste, window, cx),
             EditCommand::SelectAll => self.select_all(&SelectAll, window, cx),
+            EditCommand::FormatCode => {
+                window.dispatch_action(Box::new(crate::app::FormatCode), cx)
+            }
         }
     }
 
@@ -3210,7 +3241,7 @@ impl ContextMenuHost for TextField {
             EditCommand::Copy => self.copy(&Copy, window, cx),
             EditCommand::Paste => self.paste(&Paste, window, cx),
             EditCommand::SelectAll => self.select_all(&SelectAll, window, cx),
-            EditCommand::Undo | EditCommand::Redo => {}
+            EditCommand::Undo | EditCommand::Redo | EditCommand::FormatCode => {}
         }
     }
 

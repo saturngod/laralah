@@ -12,7 +12,7 @@ use crate::app::{
     CloseOverlay, CloseScratchTab, FocusLogSearch, FocusSettingsSearch, FocusSshSearch,
     GraphFitView, GraphZoomIn, GraphZoomOut, ModeDetailDive, ModeRawCli, ModeTable, NewScratchTab,
     NextScratchTab, OpenDirectory, PaletteConfirm, PaletteDown, PaletteUp, PrevScratchTab, QuitApp,
-    RunCode, SubmitAiPrompt, ToggleAiSidebar, ToggleLogs, TogglePalette, ToggleSettings,
+    FormatCode, RunCode, SubmitAiPrompt, ToggleAiSidebar, ToggleLogs, TogglePalette, ToggleSettings,
     ToggleSidebar, ToggleSql, ToggleSshModal,
 };
 use gpui::{Action, App, KeyBinding, Keystroke};
@@ -70,6 +70,17 @@ macro_rules! spec {
     ($id:expr, $label:expr, [$($key:expr),* $(,)?], [$($t:expr),+ $(,)?]) => {
         ShortcutSpec { id: $id, label: $label, defaults: &[$($key),*], targets: &[$($t),+], allow_bare: false }
     };
+    // Different defaults on macOS and on Windows/Linux, where the OS or input
+    // methods claim some keys first.
+    ($id:expr, $label:expr, mac [$($mk:expr),* $(,)?], other [$($ok:expr),* $(,)?], [$($t:expr),+ $(,)?]) => {
+        ShortcutSpec {
+            id: $id,
+            label: $label,
+            defaults: if cfg!(target_os = "macos") { &[$($mk),*] } else { &[$($ok),*] },
+            targets: &[$($t),+],
+            allow_bare: false,
+        }
+    };
     ($id:expr, $label:expr, [$($key:expr),* $(,)?], [$($t:expr),+ $(,)?], bare) => {
         ShortcutSpec { id: $id, label: $label, defaults: &[$($key),*], targets: &[$($t),+], allow_bare: true }
     };
@@ -78,6 +89,14 @@ macro_rules! spec {
 pub fn shortcut_specs() -> &'static [ShortcutSpec] {
     static SPECS: &[ShortcutSpec] = &[
         spec!("run_code", "Run code", ["secondary-r"], [target!(RunCode)]),
+        spec!(
+            "format_code",
+            "Format code",
+            // Alt+Shift switches keyboard layouts on Windows.
+            mac ["secondary-shift-f", "alt-shift-f"],
+            other ["secondary-shift-f"],
+            [target!(FormatCode)]
+        ),
         spec!(
             "command_palette",
             "Command palette",
@@ -90,13 +109,17 @@ pub fn shortcut_specs() -> &'static [ShortcutSpec] {
         spec!(
             "prev_tab",
             "Previous scratchpad tab",
-            ["secondary-shift-[", "ctrl-shift-tab"],
+            // Shift+[ arrives as `{` on some layouts off macOS, so Ctrl+Shift+Tab
+            // comes first there (it's the one shown in menus and hints).
+            mac ["secondary-shift-[", "ctrl-shift-tab"],
+            other ["ctrl-shift-tab", "secondary-shift-["],
             [target!(PrevScratchTab)]
         ),
         spec!(
             "next_tab",
             "Next scratchpad tab",
-            ["secondary-shift-]", "ctrl-tab"],
+            mac ["secondary-shift-]", "ctrl-tab"],
+            other ["ctrl-tab", "secondary-shift-]"],
             [target!(NextScratchTab)]
         ),
         spec!("open_folder", "Open local folder", ["secondary-o"], [target!(OpenDirectory)]),
@@ -131,7 +154,9 @@ pub fn shortcut_specs() -> &'static [ShortcutSpec] {
         spec!(
             "trigger_autocomplete",
             "Trigger autocomplete",
-            ["ctrl-space"],
+            // Input-method switchers (fcitx, some Windows IMEs) take Ctrl+Space.
+            mac ["ctrl-space"],
+            other ["ctrl-space", "alt-/"],
             [target!(crate::editor::TriggerCompletion, "CodeEditor")]
         ),
         spec!(
@@ -259,6 +284,10 @@ pub fn apply(cx: &mut App, overrides: &HashMap<String, Vec<String>>) {
         }
     }
     cx.bind_keys(bindings);
+
+    // Native menu key equivalents are read from the keymap when menus are set.
+    #[cfg(target_os = "macos")]
+    crate::app_menu::install_native(cx);
 }
 
 /// Display label of the first keystroke bound to the shortcut `id` (e.g. `⌘R` or
@@ -498,6 +527,29 @@ mod tests {
         // with the global ones.
         let fit = spec_by_id("graph_fit").unwrap();
         assert!(conflicts(fit, "secondary-r", &overrides).iter().any(|s| s.id == "run_code"));
+    }
+
+    #[test]
+    fn platform_specific_defaults() {
+        let format = spec_by_id("format_code").unwrap();
+        let next = spec_by_id("next_tab").unwrap();
+        let complete = spec_by_id("trigger_autocomplete").unwrap();
+        if cfg!(target_os = "macos") {
+            assert_eq!(format.defaults, ["secondary-shift-f", "alt-shift-f"]);
+            assert_eq!(next.defaults[0], "secondary-shift-]");
+            assert_eq!(complete.defaults, ["ctrl-space"]);
+        } else {
+            assert_eq!(format.defaults, ["secondary-shift-f"]);
+            assert_eq!(next.defaults[0], "ctrl-tab");
+            assert_eq!(complete.defaults, ["ctrl-space", "alt-/"]);
+        }
+        // Each platform's set has no clashes within shared contexts.
+        let overrides = HashMap::new();
+        for spec in shortcut_specs() {
+            for key in spec.defaults {
+                assert!(conflicts(spec, key, &overrides).is_empty(), "{} {key} clashes", spec.id);
+            }
+        }
     }
 
     #[test]

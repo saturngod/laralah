@@ -32,6 +32,7 @@ It is a native app written in Rust (with [GPUI](https://www.gpui.rs/)). It runs 
 - **AI helper** (Cmd+I) – ask an AI coding tool for help. Works with Claude Code, Codex, OpenCode, Qoder, and Antigravity, if you have them installed.
 - **Command palette** (Cmd+P) – find any action quickly.
 - **Syntax check** – PHP errors show up before you run.
+- **Format code** (Cmd+Shift+F) – tidy up your code with [Laravel Pint](https://laravel.com/docs/pint), using your project's `pint.json`. Without Pint, Laralah fixes the indentation for you.
 
 ## Requirements
 
@@ -58,13 +59,14 @@ Download the latest version from the [Releases page](https://github.com/saturngo
    ```
 4. Press **Cmd+R** to run it.
 
-On Linux and Windows, use **Ctrl** where this page says **Cmd**.
+On Linux and Windows, use **Ctrl** where this page says **Cmd**. Every command is also in the menu: the menu bar on macOS, or the **☰** button at the top left on Linux and Windows (File, Edit, Editor, View).
 
 ## Keyboard shortcuts
 
 | Shortcut | Action |
 |----------|--------|
 | Cmd+R | Run code |
+| Cmd+Shift+F | Format code |
 | Cmd+O | Open a project folder |
 | Cmd+T | New tab |
 | Cmd+W | Close tab |
@@ -78,6 +80,8 @@ On Linux and Windows, use **Ctrl** where this page says **Cmd**.
 | Cmd+1 / 2 / 3 | Detail / Table / Raw CLI view |
 | Cmd+, | Settings |
 | Esc | Close the open panel |
+
+On Linux and Windows, Ctrl+Tab / Ctrl+Shift+Tab also switch tabs, and Alt+/ opens autocomplete when your input method uses Ctrl+Space. You can change any shortcut in Settings → Shortcuts.
 
 ## Build from source
 

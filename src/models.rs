@@ -133,6 +133,17 @@ impl ExecutionTarget {
         }
     }
 
+    /// A checkout of the project on this computer, when there is one (always for
+    /// a local target; the optional mapped folder for Docker and SSH ones).
+    pub fn local_project_dir(&self) -> Option<&str> {
+        let dir = match self {
+            ExecutionTarget::Local { project_path } => project_path.as_str(),
+            ExecutionTarget::Docker { local_path, .. } => local_path.as_str(),
+            ExecutionTarget::Ssh { local_path, .. } => local_path.as_deref()?,
+        };
+        Some(dir).filter(|d| !d.trim().is_empty())
+    }
+
     pub fn local_or_workdir(&self) -> &str {
         match self {
             ExecutionTarget::Local { project_path } => project_path,

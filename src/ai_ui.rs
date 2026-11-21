@@ -7,35 +7,6 @@ use crate::ai::{
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
-struct AiTooltip {
-    text: SharedString,
-}
-
-impl AiTooltip {
-    fn view(text: impl Into<SharedString>, cx: &mut App) -> gpui::AnyView {
-        let text = text.into();
-        cx.new(|_| Self { text }).into()
-    }
-}
-
-impl Render for AiTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let _scope = crate::theme::enter_scope(crate::theme::Scope::Fixed);
-        div()
-            .px_2p5()
-            .py_1()
-            .rounded_md()
-            .bg(rgb(0x1f2430))
-            .border_1()
-            .border_color(rgb(0x334155))
-            .shadow_md()
-            .text_xs()
-            .whitespace_nowrap()
-            .text_color(rgb(0xe2e8f0))
-            .child(self.text.clone())
-    }
-}
-
 /// Drops the provider name from a model label inside that provider's own
 /// panel ("Claude Opus 5.5" → "Opus 5.5"), so rows don't truncate.
 fn picker_model_label(provider: CliProviderId, label: &str) -> String {
@@ -1450,7 +1421,7 @@ impl LaralahApp {
                                         this.ai_effort_menu_open = false;
                                         cx.notify();
                                     }))
-                                    .tooltip(|_, cx| AiTooltip::view("Chat sessions", cx))
+                                    .tooltip(|_, cx| TextTooltip::view("Chat sessions", cx))
                                     .child(
                                         svg()
                                             .path("icons/clock.svg")
@@ -1493,7 +1464,7 @@ impl LaralahApp {
                                         cx.stop_propagation();
                                         this.open_new_ai_session(window, cx);
                                     }))
-                                    .tooltip(|_, cx| AiTooltip::view("Open new session", cx))
+                                    .tooltip(|_, cx| TextTooltip::view("Open new session", cx))
                                     .child(
                                         svg()
                                             .path("icons/plus.svg")
@@ -1522,7 +1493,7 @@ impl LaralahApp {
                                             this.clear_active_ai_session(window, cx);
                                         }
                                     }))
-                                    .tooltip(|_, cx| AiTooltip::view("Clear chat", cx))
+                                    .tooltip(|_, cx| TextTooltip::view("Clear chat", cx))
                                     .child(
                                         svg()
                                             .path("icons/trash.svg")
@@ -1593,7 +1564,7 @@ impl LaralahApp {
                                             .gap_1()
                                             .overflow_hidden()
                                             .tooltip(move |_, cx| {
-                                                AiTooltip::view(project_tip.clone(), cx)
+                                                TextTooltip::view(project_tip.clone(), cx)
                                             })
                                             .child(
                                                 svg()
@@ -1645,7 +1616,7 @@ impl LaralahApp {
                                                 save_settings(&this.settings);
                                                 cx.notify();
                                             }))
-                                            .tooltip(move |_, cx| AiTooltip::view(include_tip, cx))
+                                            .tooltip(move |_, cx| TextTooltip::view(include_tip, cx))
                                             .child(
                                                 svg()
                                                     .path("icons/code.svg")
@@ -1725,6 +1696,7 @@ impl LaralahApp {
                             .child(if is_busy {
                                 div()
                                     .id("ai-stop-btn")
+                                    .tooltip(|_, cx| TextTooltip::view("Stop response", cx))
                                     .size(px(34.0))
                                     .rounded_lg()
                                     .bg(rgb(0xef4444))
@@ -1747,6 +1719,9 @@ impl LaralahApp {
                             } else {
                                 div()
                                     .id("ai-send-btn")
+                                    .tooltip(|_, cx| {
+                                        TextTooltip::view(crate::keymap::hint_in("submit_ai_prompt", "Send ({})"), cx)
+                                    })
                                     .size(px(34.0))
                                     .rounded_lg()
                                     .bg(rgb(0x2563eb))
@@ -1911,6 +1886,7 @@ impl LaralahApp {
                             .child(
                                 div()
                                     .id(SharedString::from(format!("ai-session-del-{idx}")))
+                                    .tooltip(|_, cx| TextTooltip::view("Delete session", cx))
                                     .px_1p5()
                                     .py_0p5()
                                     .rounded_sm()
@@ -1951,7 +1927,7 @@ impl LaralahApp {
             .flex_row()
             .items_center()
             .gap_2p5()
-            .tooltip(move |_, cx| AiTooltip::view(tip.clone(), cx))
+            .tooltip(move |_, cx| TextTooltip::view(tip.clone(), cx))
             .on_click(cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
                 this.settings
@@ -2233,7 +2209,7 @@ impl LaralahApp {
                                         "picker-agent-{}",
                                         prov.as_str()
                                     )))
-                                    .tooltip(move |_, cx| AiTooltip::view(tip.clone(), cx))
+                                    .tooltip(move |_, cx| TextTooltip::view(tip.clone(), cx))
                                     .relative()
                                     .size(px(34.0))
                                     .rounded_lg()
@@ -2315,7 +2291,7 @@ impl LaralahApp {
                                         this.active_settings_tab = SettingsTab::Ai;
                                         this.open_settings(window, cx);
                                     }))
-                                    .tooltip(|_, cx| AiTooltip::view("AI agent settings", cx))
+                                    .tooltip(|_, cx| TextTooltip::view("AI agent settings", cx))
                                     .child(
                                         svg()
                                             .path("icons/sliders.svg")
@@ -2383,7 +2359,7 @@ impl LaralahApp {
                                             .hover(|s| s.bg(rgb(BG_HOVER)))
                                             .cursor_pointer()
                                             .tooltip(move |_, cx| {
-                                                AiTooltip::view(refresh_tip.clone(), cx)
+                                                TextTooltip::view(refresh_tip.clone(), cx)
                                             })
                                             .flex()
                                             .items_center()
@@ -2583,7 +2559,7 @@ impl LaralahApp {
                                     .border_color(rgb(if effort_enabled { 0xcbd5e1 } else { BORDER_LIGHT }))
                                     .when(!effort_enabled, |b| {
                                         b.tooltip(|_, cx| {
-                                            AiTooltip::view("This model has no effort levels", cx)
+                                            TextTooltip::view("This model has no effort levels", cx)
                                         })
                                     })
                                     .when(!supported_efforts.is_empty(), |b| {
@@ -3072,7 +3048,7 @@ impl LaralahApp {
                                                             .font_weight(gpui::FontWeight::MEDIUM)
                                                             .text_color(fixed_rgb(0xffffff))
                                                             .tooltip(|_, cx| {
-                                                                AiTooltip::view(
+                                                                TextTooltip::view(
                                                                     "Append snippet to bottom of editor",
                                                                     cx,
                                                                 )
@@ -3112,7 +3088,7 @@ impl LaralahApp {
                                                             .text_xs()
                                                             .text_color(rgb(TEXT_MAIN))
                                                             .tooltip(|_, cx| {
-                                                                AiTooltip::view(
+                                                                TextTooltip::view(
                                                                     "Overwrite entire editor with this snippet",
                                                                     cx,
                                                                 )
