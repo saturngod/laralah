@@ -15,6 +15,7 @@ mod models;
 mod object_graph;
 mod paths;
 mod runner;
+mod selectable;
 mod settings;
 mod ssh;
 mod theme;
@@ -90,6 +91,7 @@ fn main() {
             configure_macos_app(cx);
 
             bind_editor_keys(cx);
+            selectable::bind_selectable_keys(cx);
             cx.bind_keys([
                 KeyBinding::new("secondary-q", QuitApp, None),
                 KeyBinding::new("secondary-,", ToggleSettings, None),

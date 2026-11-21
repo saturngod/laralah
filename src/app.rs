@@ -11,6 +11,7 @@ use crate::ai::discovery::detect_providers_fast;
 use crate::ai::{AiChatSession, AiUiEvent, CliAgentRuntimeState, CliProviderId};
 use crate::command_palette::{filter_palette_entries, PaletteAction, PaletteEntry, PaletteItemKind};
 use crate::editor::{CodeEditor, TextField};
+use crate::selectable::{selectable_region, selectable_text, TextSelection};
 use crate::laravel_lsp::{
     ClassSymbol, LaravelLanguageService, SymbolKind, insert_use_import,
 };
@@ -160,6 +161,8 @@ struct ScratchTab {
 
 pub struct LaralahApp {
     focus_handle: FocusHandle,
+    /// Text selection shared by the output pane's Detail Dive / CLI / SQL text.
+    output_selection: TextSelection,
     editor: Entity<CodeEditor>,
     object_graph_view: Entity<ObjectGraphView>,
     mail_webview: Entity<MailWebView>,
@@ -643,6 +646,7 @@ impl LaralahApp {
 
         let mut app = Self {
             focus_handle: cx.focus_handle(),
+            output_selection: TextSelection::new(cx.focus_handle()),
             editor,
             object_graph_view,
             mail_webview,
@@ -1326,6 +1330,7 @@ impl LaralahApp {
                     app.mail_webview.update(cx, |wv, cx| wv.set_html(html, cx));
                 }
 
+                app.output_selection.clear();
                 app.last_result = Some(result);
                 cx.notify();
             })
@@ -5075,7 +5080,8 @@ impl LaralahApp {
 
         let has_expanded = !self.expanded_nodes.is_empty();
 
-        container
+        self.output_selection.begin_frame();
+        selectable_region(container, &self.output_selection)
             .bg(rgb(BG_CANVAS))
             .border_color(rgb(BORDER_LIGHT))
             .flex()
@@ -5152,6 +5158,7 @@ impl LaralahApp {
                                         .text_xs()
                                         .text_color(rgb(TEXT_MUTED))
                                         .on_click(cx.listener(|this, _, _, cx| {
+                                            this.output_selection.clear();
                                             this.last_result = None;
                                             this.expanded_nodes.clear();
                                             cx.notify();
@@ -5259,7 +5266,11 @@ impl LaralahApp {
                                 .text_xs()
                                 .line_height(px(20.0))
                                 .text_color(rgb(TEXT_MAIN))
-                                .child(raw_output.clone()),
+                                .child(selectable_text(
+                                    &self.output_selection,
+                                    "dive-stdout",
+                                    raw_output.clone(),
+                                )),
                         )
                         .child(
                             div()
@@ -5271,7 +5282,7 @@ impl LaralahApp {
                 )
             })
             // Ordered top-to-bottom stream: SQL queries, dump()s, and final return value
-            .children(stream_items.into_iter().map(|item| match item {
+            .children(stream_items.into_iter().enumerate().map(|(item_ix, item)| match item {
                 DetailStreamItem::Sql(q) => div()
                     .w_full()
                     .flex_shrink_0()
@@ -5330,7 +5341,11 @@ impl LaralahApp {
                                     .text_xs()
                                     .line_height(px(20.0))
                                     .text_color(rgb(TEXT_MAIN))
-                                    .child(q.interpolated_sql),
+                                    .child(selectable_text(
+                                        &self.output_selection,
+                                        format!("dive-sql-{item_ix}"),
+                                        q.interpolated_sql,
+                                    )),
                             ),
                     )
                     .child(
@@ -5403,7 +5418,11 @@ impl LaralahApp {
                                 .text_xs()
                                 .line_height(px(20.0))
                                 .text_color(rgb(0x991b1b))
-                                .child(display_msg),
+                                .child(selectable_text(
+                                    &self.output_selection,
+                                    "dive-exception",
+                                    display_msg,
+                                )),
                         )
                         .when(exc.line > 0, |r| {
                             r.child(
@@ -5628,6 +5647,10 @@ impl LaralahApp {
                 .rounded_sm()
                 .hover(|s| s.bg(rgb(BG_SUBTLE)))
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    // A drag or double-click that selected header text is not a toggle.
+                    if this.output_selection.take_suppress_click() {
+                        return;
+                    }
                     if this.expanded_nodes.contains(&toggle_id) {
                         this.expanded_nodes.remove(&toggle_id);
                     } else {
@@ -5642,7 +5665,11 @@ impl LaralahApp {
                 div()
                     .flex_none()
                     .text_color(rgb(COLOR_PROP_KEY))
-                    .child(format!("{key}:")),
+                    .child(selectable_text(
+                        &self.output_selection,
+                        format!("{dom_id}-key"),
+                        format!("{key}:"),
+                    )),
             );
         }
 
@@ -5669,7 +5696,11 @@ impl LaralahApp {
                         .flex_none()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(rgb(TEXT_MAIN))
-                        .child(short_name.to_string()),
+                        .child(selectable_text(
+                            &self.output_selection,
+                            format!("{dom_id}-class"),
+                            short_name.to_string(),
+                        )),
                 )
                 .child(
                     div()
@@ -5729,10 +5760,14 @@ impl LaralahApp {
             row = row.child(
                 div()
                     .min_w(px(0.0))
-                    .when(is_root_header, |d| d.truncate())
-                    .when(!is_root_header, |d| d.flex_1().overflow_hidden())
+                    .flex_1()
+                    .overflow_hidden()
                     .text_color(rgb(val_color))
-                    .child(val.to_string()),
+                    .child(selectable_text(
+                        &self.output_selection,
+                        format!("{dom_id}-val"),
+                        val.to_string(),
+                    )),
             );
         }
 
@@ -6092,8 +6127,10 @@ impl LaralahApp {
                     .py_2p5()
                     .flex()
                     .flex_col()
-                    .children(cli_lines.into_iter().map(|line| {
+                    .children(cli_lines.into_iter().enumerate().map(|(line_ix, line)| {
                         let depth = line.indent_depth;
+                        let line_key = format!("cli-line-{line_ix}");
+                        let indent = "    ".repeat(depth);
                         let is_blank = line.spans.is_empty();
                         div()
                             .w_full()
@@ -6113,6 +6150,15 @@ impl LaralahApp {
                                     .border_l_1()
                                     .border_color(rgb(BORDER_LIGHT))
                             }))
+                            .when(is_blank, |row| {
+                                row.child(
+                                    div().flex_1().min_w(px(0.0)).child(selectable_text(
+                                        &self.output_selection,
+                                        line_key.clone(),
+                                        "",
+                                    )),
+                                )
+                            })
                             .when(!is_blank, |row| {
                                 let mut combined = String::new();
                                 let mut highlights = Vec::with_capacity(line.spans.len());
@@ -6161,8 +6207,13 @@ impl LaralahApp {
                                         .whitespace_normal()
                                         .text_color(rgb(TEXT_MAIN))
                                         .child(
-                                            gpui::StyledText::new(combined)
-                                                .with_highlights(highlights),
+                                            selectable_text(
+                                                &self.output_selection,
+                                                line_key,
+                                                combined,
+                                            )
+                                            .with_highlights(highlights)
+                                            .copy_prefix(indent),
                                         ),
                                 )
                             })
