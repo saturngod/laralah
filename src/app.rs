@@ -1,3 +1,9 @@
+/// Name for the local machine in UI copy: "this Mac" on macOS, "this computer" elsewhere.
+#[cfg(target_os = "macos")]
+macro_rules! this_machine { () => { "this Mac" }; (cap) => { "This Mac" }; }
+#[cfg(not(target_os = "macos"))]
+macro_rules! this_machine { () => { "this computer" }; (cap) => { "This computer" }; }
+
 #[path = "ai_ui.rs"]
 mod ai_ui;
 
@@ -9872,7 +9878,7 @@ impl LaralahApp {
                                     div()
                                         .text_xs()
                                         .text_color(rgb(0x94a3b8))
-                                        .child("Add an SSH server or a Docker container on this Mac to run Tinker against it."),
+                                        .child(concat!("Add an SSH server or a Docker container on ", this_machine!(), " to run Tinker against it.")),
                                 ),
                         )
                     })
@@ -9970,7 +9976,7 @@ impl LaralahApp {
             (false, false) => ("SSH", false),
         };
         let endpoint = if is_local {
-            "This Mac".to_string()
+            this_machine!(cap).to_string()
         } else if prof.port == 22 {
             format!("{}@{}", prof.username, prof.host)
         } else {
@@ -10356,7 +10362,7 @@ impl LaralahApp {
                     .gap_3()
                     .child(div().flex_1().child(form_section_header(
                         "Container",
-                        "Pick a running container on this Mac. Its working directory fills the folder below.",
+                        concat!("Pick a running container on ", this_machine!(), ". Its working directory fills the folder below."),
                     )))
                     .child(settings_action_btn(
                         "local-docker-refresh",
@@ -10531,7 +10537,7 @@ impl LaralahApp {
                 ConnectionKind::LocalDocker,
                 "icons/layers.svg",
                 "Local Docker",
-                "A running container on this Mac. Runs with docker exec, no SSH needed.",
+                concat!("A running container on ", this_machine!(), ". Runs with docker exec, no SSH needed."),
             ),
         ];
         div()
@@ -10629,7 +10635,7 @@ impl LaralahApp {
             (false, false) => ("SSH", false),
         };
         let endpoint = if is_local {
-            "This Mac".to_string()
+            this_machine!(cap).to_string()
         } else if host.is_empty() {
             "user@host".to_string()
         } else {
@@ -11953,7 +11959,7 @@ impl LaralahApp {
                     })
                     .child(form_section_header(
                         "Workspace",
-                        "Optional. Where this app's code lives on this Mac.",
+                        concat!("Optional. Where this app's code lives on ", this_machine!(), "."),
                     ))
                     // 4. Local path + [ Select ]
                     .child(
@@ -11966,7 +11972,7 @@ impl LaralahApp {
                                 div()
                                     .text_xs()
                                     .text_color(rgb(0x94a3b8))
-                                    .child("The same Laravel app checked out on this Mac. Enables autocomplete and Laravel version detection."),
+                                    .child(concat!("The same Laravel app checked out on ", this_machine!(), ". Enables autocomplete and Laravel version detection.")),
                             )
                             .child(
                                 div()
