@@ -4,7 +4,7 @@ use crate::laravel_lsp::{
 use crate::models::EditorDiagnostic;
 use crate::settings::AppSettings;
 use gpui::{
-    actions, div, fill, point, prelude::*, px, relative, size, svg, App, Bounds,
+    actions, anchored, deferred, div, fill, point, prelude::*, px, relative, size, svg, App, Bounds,
     ClipboardItem, ContentMask, Context, CursorStyle, DispatchPhase, Element, ElementId,
     ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, Font, FontFeatures,
     FontStyle, FontWeight, GlobalElementId, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
@@ -55,15 +55,18 @@ actions!(
         Redo,
         TriggerCompletion,
         DismissCompletion,
+        DismissContextMenu,
     ]
 );
 
 pub fn bind_editor_keys(cx: &mut App) {
+    // `secondary` is Cmd on macOS and Ctrl on Windows/Linux. Plain `cmd` maps
+    // to the Windows/Super key off macOS, so clipboard and undo shortcuts must
+    // use `secondary` to work everywhere.
     cx.bind_keys([
         KeyBinding::new("backspace", Backspace, Some("EditorInput")),
         KeyBinding::new("delete", Delete, Some("EditorInput")),
         KeyBinding::new("alt-backspace", DeleteWordLeft, Some("EditorInput")),
-        KeyBinding::new("cmd-backspace", DeleteToLineStart, Some("EditorInput")),
         KeyBinding::new("enter", Enter, Some("CodeEditor")),
         KeyBinding::new("tab", Indent, Some("CodeEditor")),
         KeyBinding::new("shift-tab", Outdent, Some("CodeEditor")),
@@ -75,34 +78,197 @@ pub fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("down", Down, Some("CodeEditor")),
         KeyBinding::new("alt-left", WordLeft, Some("EditorInput")),
         KeyBinding::new("alt-right", WordRight, Some("EditorInput")),
-        KeyBinding::new("cmd-left", LineStart, Some("EditorInput")),
         KeyBinding::new("home", LineStart, Some("EditorInput")),
-        KeyBinding::new("cmd-right", LineEnd, Some("EditorInput")),
         KeyBinding::new("end", LineEnd, Some("EditorInput")),
-        KeyBinding::new("cmd-up", DocStart, Some("CodeEditor")),
-        KeyBinding::new("cmd-down", DocEnd, Some("CodeEditor")),
         KeyBinding::new("shift-left", SelectLeft, Some("EditorInput")),
         KeyBinding::new("shift-right", SelectRight, Some("EditorInput")),
         KeyBinding::new("shift-up", SelectUp, Some("CodeEditor")),
         KeyBinding::new("shift-down", SelectDown, Some("CodeEditor")),
         KeyBinding::new("alt-shift-left", SelectWordLeft, Some("EditorInput")),
         KeyBinding::new("alt-shift-right", SelectWordRight, Some("EditorInput")),
-        KeyBinding::new("cmd-shift-left", SelectLineStart, Some("EditorInput")),
         KeyBinding::new("shift-home", SelectLineStart, Some("EditorInput")),
-        KeyBinding::new("cmd-shift-right", SelectLineEnd, Some("EditorInput")),
         KeyBinding::new("shift-end", SelectLineEnd, Some("EditorInput")),
-        KeyBinding::new("cmd-shift-up", SelectDocStart, Some("CodeEditor")),
-        KeyBinding::new("cmd-shift-down", SelectDocEnd, Some("CodeEditor")),
-        KeyBinding::new("cmd-a", SelectAll, Some("EditorInput")),
-        KeyBinding::new("cmd-c", Copy, Some("EditorInput")),
-        KeyBinding::new("cmd-x", Cut, Some("EditorInput")),
-        KeyBinding::new("cmd-v", Paste, Some("EditorInput")),
-        KeyBinding::new("cmd-z", Undo, Some("EditorInput")),
-        KeyBinding::new("cmd-shift-z", Redo, Some("EditorInput")),
-        KeyBinding::new("cmd-y", Redo, Some("EditorInput")),
+        KeyBinding::new("secondary-a", SelectAll, Some("EditorInput")),
+        KeyBinding::new("secondary-c", Copy, Some("EditorInput")),
+        KeyBinding::new("secondary-x", Cut, Some("EditorInput")),
+        KeyBinding::new("secondary-v", Paste, Some("EditorInput")),
+        KeyBinding::new("secondary-z", Undo, Some("EditorInput")),
+        KeyBinding::new("secondary-shift-z", Redo, Some("EditorInput")),
+        KeyBinding::new("secondary-y", Redo, Some("EditorInput")),
         KeyBinding::new("ctrl-space", TriggerCompletion, Some("CodeEditor")),
         KeyBinding::new("escape", DismissCompletion, Some("CompletionOpen")),
+        KeyBinding::new("escape", DismissContextMenu, Some("ContextMenuOpen")),
     ]);
+
+    // Line/document navigation follows each platform's own conventions.
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        KeyBinding::new("cmd-backspace", DeleteToLineStart, Some("EditorInput")),
+        KeyBinding::new("cmd-left", LineStart, Some("EditorInput")),
+        KeyBinding::new("cmd-right", LineEnd, Some("EditorInput")),
+        KeyBinding::new("cmd-up", DocStart, Some("CodeEditor")),
+        KeyBinding::new("cmd-down", DocEnd, Some("CodeEditor")),
+        KeyBinding::new("cmd-shift-left", SelectLineStart, Some("EditorInput")),
+        KeyBinding::new("cmd-shift-right", SelectLineEnd, Some("EditorInput")),
+        KeyBinding::new("cmd-shift-up", SelectDocStart, Some("CodeEditor")),
+        KeyBinding::new("cmd-shift-down", SelectDocEnd, Some("CodeEditor")),
+    ]);
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys([
+        KeyBinding::new("ctrl-backspace", DeleteWordLeft, Some("EditorInput")),
+        KeyBinding::new("ctrl-left", WordLeft, Some("EditorInput")),
+        KeyBinding::new("ctrl-right", WordRight, Some("EditorInput")),
+        KeyBinding::new("ctrl-shift-left", SelectWordLeft, Some("EditorInput")),
+        KeyBinding::new("ctrl-shift-right", SelectWordRight, Some("EditorInput")),
+        KeyBinding::new("ctrl-home", DocStart, Some("CodeEditor")),
+        KeyBinding::new("ctrl-end", DocEnd, Some("CodeEditor")),
+        KeyBinding::new("ctrl-shift-home", SelectDocStart, Some("CodeEditor")),
+        KeyBinding::new("ctrl-shift-end", SelectDocEnd, Some("CodeEditor")),
+        KeyBinding::new("shift-delete", Cut, Some("EditorInput")),
+        KeyBinding::new("ctrl-insert", Copy, Some("EditorInput")),
+        KeyBinding::new("shift-insert", Paste, Some("EditorInput")),
+    ]);
+}
+
+/// Commands offered by the editor right-click menu.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EditCommand {
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
+impl EditCommand {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
+            Self::Cut => "Cut",
+            Self::Copy => "Copy",
+            Self::Paste => "Paste",
+            Self::SelectAll => "Select All",
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn shortcut(self) -> &'static str {
+        match self {
+            Self::Undo => "⌘Z",
+            Self::Redo => "⇧⌘Z",
+            Self::Cut => "⌘X",
+            Self::Copy => "⌘C",
+            Self::Paste => "⌘V",
+            Self::SelectAll => "⌘A",
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn shortcut(self) -> &'static str {
+        match self {
+            Self::Undo => "Ctrl+Z",
+            Self::Redo => "Ctrl+Y",
+            Self::Cut => "Ctrl+X",
+            Self::Copy => "Ctrl+C",
+            Self::Paste => "Ctrl+V",
+            Self::SelectAll => "Ctrl+A",
+        }
+    }
+}
+
+/// An open right-click menu: where it was opened (window coordinates) and
+/// which entries are enabled, as `None` for a separator.
+struct ContextMenuState {
+    position: Point<Pixels>,
+    entries: Vec<Option<(EditCommand, bool)>>,
+}
+
+trait ContextMenuHost: Sized + 'static {
+    fn run_edit_command(&mut self, cmd: EditCommand, window: &mut Window, cx: &mut Context<Self>);
+    fn close_context_menu(&mut self, cx: &mut Context<Self>);
+}
+
+fn clipboard_has_text(cx: &App) -> bool {
+    cx.read_from_clipboard()
+        .and_then(|c| c.text())
+        .is_some_and(|t| !t.is_empty())
+}
+
+fn render_context_menu<V: ContextMenuHost>(
+    menu: &ContextMenuState,
+    cx: &mut Context<V>,
+) -> gpui::AnyElement {
+    let items = menu.entries.iter().enumerate().map(|(idx, entry)| {
+        let Some((cmd, enabled)) = *entry else {
+            return div()
+                .h(px(1.0))
+                .my(px(4.0))
+                .mx(px(8.0))
+                .bg(rgb(0xe2e8f0))
+                .into_any_element();
+        };
+        div()
+            .id(SharedString::from(format!("editor-context-item-{idx}")))
+            .h(px(26.0))
+            .mx(px(4.0))
+            .px(px(10.0))
+            .rounded_sm()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(px(24.0))
+            .text_color(if enabled { rgb(0x0f172a) } else { rgb(0xcbd5e1) })
+            .when(enabled, |el| {
+                el.cursor_pointer()
+                    .hover(|s| s.bg(gpui::rgb(0x2f81f7)).text_color(gpui::rgb(0xffffff)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.close_context_menu(cx);
+                            this.run_edit_command(cmd, window, cx);
+                        }),
+                    )
+            })
+            .when(!enabled, |el| {
+                el.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            })
+            .child(cmd.label())
+            .child(div().opacity(0.6).child(cmd.shortcut()))
+            .into_any_element()
+    });
+
+    deferred(
+        anchored()
+            .position(menu.position)
+            .snap_to_window_with_margin(px(8.0))
+            .child(
+                div()
+                    .id("editor-context-menu")
+                    .min_w(px(190.0))
+                    .py(px(4.0))
+                    .bg(rgb(0xffffff))
+                    .border_1()
+                    .border_color(rgb(0xe2e8f0))
+                    .rounded_md()
+                    .shadow_lg()
+                    .text_sm()
+                    .cursor_default()
+                    .flex()
+                    .flex_col()
+                    .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                        this.close_context_menu(cx);
+                    }))
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                    .children(items),
+            ),
+    )
+    .with_priority(1)
+    .into_any_element()
 }
 
 const GUTTER_WIDTH: f32 = 46.0;
@@ -167,6 +333,7 @@ pub struct CodeEditor {
     diagnostic: Option<EditorDiagnostic>,
     lsp: Option<Arc<LaravelLanguageService>>,
     completion_popup: Option<CompletionPopupState>,
+    context_menu: Option<ContextMenuState>,
     show_line_numbers: bool,
     indentation_size: usize,
     show_inline_errors: bool,
@@ -208,6 +375,7 @@ impl CodeEditor {
             diagnostic: None,
             lsp: None,
             completion_popup: None,
+            context_menu: None,
             show_line_numbers: true,
             indentation_size: 4,
             show_inline_errors: true,
@@ -1346,13 +1514,17 @@ impl EntityInputHandler for CodeEditor {
 impl Render for CodeEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let has_popup = self.completion_popup.is_some();
-        let key_ctx = if has_popup {
-            "CodeEditor EditorInput CompletionOpen"
-        } else {
-            "CodeEditor EditorInput"
+        let key_ctx = match (has_popup, self.context_menu.is_some()) {
+            (_, true) => "CodeEditor EditorInput ContextMenuOpen",
+            (true, false) => "CodeEditor EditorInput CompletionOpen",
+            (false, false) => "CodeEditor EditorInput",
         };
 
         let popup_overlay = self.render_completion_popup(cx);
+        let context_menu = self
+            .context_menu
+            .as_ref()
+            .map(|menu| render_context_menu(menu, cx));
         let editor_cursor = if self.scrollbar_drag.is_some() || self.hovered_scrollbar.is_some() {
             CursorStyle::Arrow
         } else {
@@ -1403,12 +1575,73 @@ impl Render for CodeEditor {
             .on_action(cx.listener(Self::redo))
             .on_action(cx.listener(Self::trigger_completion))
             .on_action(cx.listener(Self::dismiss_completion))
+            .on_action(cx.listener(|this, _: &DismissContextMenu, _, cx| {
+                this.close_context_menu(cx)
+            }))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_mouse_down))
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .child(CodeEditorElement {
                 editor: cx.entity(),
             })
             .when_some(popup_overlay, |el, pop| el.child(pop))
+            .when_some(context_menu, |el, menu| el.child(menu))
+    }
+}
+
+impl CodeEditor {
+    fn on_right_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.stop_propagation();
+        window.focus(&self.focus_handle);
+        self.completion_popup = None;
+        // Keep a selection the click lands inside; otherwise move the caret
+        // to the click, like native editors do.
+        let idx = self.index_for_mouse_position(event.position);
+        let sel = &self.selected_range;
+        if sel.is_empty() || idx < sel.start || idx > sel.end {
+            self.selected_range = idx..idx;
+            self.selection_reversed = false;
+            self.preferred_col = None;
+        }
+        let has_sel = !self.selected_range.is_empty();
+        self.context_menu = Some(ContextMenuState {
+            position: event.position,
+            entries: vec![
+                Some((EditCommand::Undo, !self.undo_stack.is_empty())),
+                Some((EditCommand::Redo, !self.redo_stack.is_empty())),
+                None,
+                Some((EditCommand::Cut, has_sel)),
+                Some((EditCommand::Copy, has_sel)),
+                Some((EditCommand::Paste, clipboard_has_text(cx))),
+                None,
+                Some((EditCommand::SelectAll, !self.text.is_empty())),
+            ],
+        });
+        cx.notify();
+    }
+}
+
+impl ContextMenuHost for CodeEditor {
+    fn run_edit_command(&mut self, cmd: EditCommand, window: &mut Window, cx: &mut Context<Self>) {
+        match cmd {
+            EditCommand::Undo => self.undo(&Undo, window, cx),
+            EditCommand::Redo => self.redo(&Redo, window, cx),
+            EditCommand::Cut => self.cut(&Cut, window, cx),
+            EditCommand::Copy => self.copy(&Copy, window, cx),
+            EditCommand::Paste => self.paste(&Paste, window, cx),
+            EditCommand::SelectAll => self.select_all(&SelectAll, window, cx),
+        }
+    }
+
+    fn close_context_menu(&mut self, cx: &mut Context<Self>) {
+        if self.context_menu.take().is_some() {
+            cx.notify();
+        }
     }
 }
 
@@ -2465,6 +2698,7 @@ pub struct TextField {
     last_layout: Option<ShapedLine>,
     text_color_hex: u32,
     masked: bool,
+    context_menu: Option<ContextMenuState>,
     pub edit_version: u64,
 }
 
@@ -2489,6 +2723,7 @@ impl TextField {
             last_layout: None,
             text_color_hex: 0x0f172a,
             masked: false,
+            context_menu: None,
             edit_version: 0,
         }
     }
@@ -2938,17 +3173,77 @@ impl EntityInputHandler for TextField {
     }
 }
 
+impl TextField {
+    fn on_right_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.stop_propagation();
+        window.focus(&self.focus_handle);
+        let idx = self.index_for_x(event.position);
+        let sel = &self.selected_range;
+        if sel.is_empty() || idx < sel.start || idx > sel.end {
+            self.selected_range = idx..idx;
+            self.selection_reversed = false;
+        }
+        // Never offer to copy a masked (password) field's contents.
+        let can_copy = !self.selected_range.is_empty() && !self.masked;
+        self.context_menu = Some(ContextMenuState {
+            position: event.position,
+            entries: vec![
+                Some((EditCommand::Cut, can_copy)),
+                Some((EditCommand::Copy, can_copy)),
+                Some((EditCommand::Paste, clipboard_has_text(cx))),
+                None,
+                Some((EditCommand::SelectAll, !self.text.is_empty())),
+            ],
+        });
+        cx.notify();
+    }
+}
+
+impl ContextMenuHost for TextField {
+    fn run_edit_command(&mut self, cmd: EditCommand, window: &mut Window, cx: &mut Context<Self>) {
+        match cmd {
+            EditCommand::Cut => self.cut(&Cut, window, cx),
+            EditCommand::Copy => self.copy(&Copy, window, cx),
+            EditCommand::Paste => self.paste(&Paste, window, cx),
+            EditCommand::SelectAll => self.select_all(&SelectAll, window, cx),
+            EditCommand::Undo | EditCommand::Redo => {}
+        }
+    }
+
+    fn close_context_menu(&mut self, cx: &mut Context<Self>) {
+        if self.context_menu.take().is_some() {
+            cx.notify();
+        }
+    }
+}
+
 impl Render for TextField {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let context_menu = self
+            .context_menu
+            .as_ref()
+            .map(|menu| render_context_menu(menu, cx));
         div()
             .flex()
             .items_center()
             .size_full()
             .min_h(px(26.0))
             .overflow_hidden()
-            .key_context("EditorInput")
+            .key_context(if context_menu.is_some() {
+                "EditorInput ContextMenuOpen"
+            } else {
+                "EditorInput"
+            })
             .track_focus(&self.focus_handle)
             .cursor(CursorStyle::IBeam)
+            .on_action(cx.listener(|this, _: &DismissContextMenu, _, cx| {
+                this.close_context_menu(cx)
+            }))
             .on_action(|_: &FocusNextField, window, _| window.focus_next())
             .on_action(|_: &FocusPrevField, window, _| window.focus_prev())
             .on_action(cx.listener(Self::backspace))
@@ -2972,10 +3267,12 @@ impl Render for TextField {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::paste))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_mouse_down))
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .child(TextFieldElement {
                 field: cx.entity(),
             })
+            .when_some(context_menu, |el, menu| el.child(menu))
     }
 }
 
