@@ -19,7 +19,7 @@ It is a native app written in Rust (with [GPUI](https://www.gpui.rs/)). It runs 
 ## Features
 
 - **Run code fast** – write PHP and run it in your Laravel project.
-- **Playground** (Cmd+Shift+O) – no project? Laralah sets up a fresh Laravel app (latest stable, SQLite database) in `~/.laralah/playground` so you can try code right away. Needs [Composer](https://getcomposer.org) the first time. Use **Reset Playground Database** in the command palette for a clean database.
+- **Playground** (Cmd+Shift+O) – no project? Laralah sets up a fresh Laravel app (latest stable, SQLite database) in `~/.laralah/playground` so you can try code right away. Needs [Composer](https://getcomposer.org) the first time. Use **Reset Playground Database** in the command palette for a clean database. In **Settings → Advanced → Playground**, **Update** gets the latest Laravel and **Remove** deletes the playground.
 - **Three ways to see results**
   - **Detail** (Cmd+1) – see each value step by step.
   - **Table** (Cmd+2) – see lists and collections as a table.

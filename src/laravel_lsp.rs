@@ -163,12 +163,22 @@ impl LaravelLanguageService {
 
 struct ExternalLspProcess {
     server_name: String,
-    _child: Child,
+    child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     next_id: u64,
     doc_version: i32,
     doc_uri: String,
+}
+
+/// Stops the server when the project's language service goes away. Without this, every
+/// project switch left a server running in the old project folder, and on Windows a
+/// folder that a running process works in can't be renamed or deleted.
+impl Drop for ExternalLspProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 impl ExternalLspProcess {
@@ -203,7 +213,7 @@ impl ExternalLspProcess {
             let doc_uri = format!("file://{project_path}/scratchpad.php");
             let mut proc = Self {
                 server_name: bin.to_string(),
-                _child: child,
+                child,
                 stdin,
                 stdout: BufReader::new(stdout),
                 next_id: 1,

@@ -245,5 +245,8 @@ impl Element for MailWebViewElement {
                 v.native.sync(window, bounds, &html, ver);
             });
         }
+        // Only macOS embeds a native web view; elsewhere there is nothing to paint.
+        #[cfg(not(target_os = "macos"))]
+        let _ = (&self.view, bounds, window, cx);
     }
 }

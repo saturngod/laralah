@@ -43,7 +43,9 @@ fn tool_search_dirs(php_bin: &str) -> Vec<PathBuf> {
     }
     if let Some(home) = crate::paths::home_dir() {
         dirs.push(home.join("Library/Application Support/Herd/bin"));
-        dirs.push(home.join(".config/herd-lite/bin"));
+        // Herd for Windows, and Herd Lite (php.new) on macOS, Linux and Windows.
+        dirs.push(home.join(".config").join("herd").join("bin"));
+        dirs.push(home.join(".config").join("herd-lite").join("bin"));
         dirs.push(home.join(".composer/vendor/bin"));
         dirs.push(home.join(".config/composer/vendor/bin"));
         dirs.push(home.join(".local/bin"));
@@ -126,6 +128,7 @@ fn path_env(dirs: &[PathBuf]) -> Option<std::ffi::OsString> {
 /// Runs a command to completion and turns a failure into an error carrying the tail
 /// of its output, which is where Composer and Artisan explain what went wrong.
 fn run_checked(mut cmd: Command, what: &str) -> Result<()> {
+    hide_console_window(&mut cmd);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let out = cmd.output().with_context(|| format!("could not start {what}"))?;
     if out.status.success() {
@@ -138,6 +141,74 @@ fn run_checked(mut cmd: Command, what: &str) -> Result<()> {
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     let tail = lines[lines.len().saturating_sub(8)..].join("\n");
     bail!("{what} failed:\n{tail}");
+}
+
+/// Laralah is a windowed app on Windows, so each console program it starts (php,
+/// composer.bat) would open a console window of its own; this keeps them hidden.
+#[cfg(windows)]
+fn hide_console_window(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_console_window(_cmd: &mut Command) {}
+
+/// Retries a file operation a few times. On Windows, antivirus and the search indexer
+/// briefly hold files Composer just extracted, so a rename or delete right after an
+/// install can fail with "access denied" and then succeed a moment later.
+fn with_retries<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut attempt = 0;
+    loop {
+        match op() {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt < 5 && e.kind() != std::io::ErrorKind::NotFound => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(250 * attempt));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn rename_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    with_retries(|| std::fs::rename(from, to))
+}
+
+/// Deletes a folder tree. If that fails (on Windows, read-only files can't be deleted),
+/// clears the read-only flag on everything and tries again.
+fn remove_dir(dir: &Path) -> std::io::Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    if std::fs::remove_dir_all(dir).is_ok() {
+        return Ok(());
+    }
+    clear_readonly(dir);
+    with_retries(|| match std::fs::remove_dir_all(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    })
+}
+
+#[allow(clippy::permissions_set_readonly_false)]
+fn clear_readonly(path: &Path) {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if meta.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                clear_readonly(&entry.path());
+            }
+        }
+    }
+    let mut perms = meta.permissions();
+    if perms.readonly() {
+        perms.set_readonly(false);
+        let _ = std::fs::set_permissions(path, perms);
+    }
 }
 
 /// Sets `KEY=value` in a `.env` file, replacing an existing line (commented or not).
@@ -241,8 +312,10 @@ fn finish_setup(php_bin: &str, dir: &Path, path: &Option<std::ffi::OsString>) ->
 }
 
 /// Creates the playground with the latest stable Laravel (or repairs a half-finished
-/// one). `progress` is told about each step so the UI can show it.
-pub fn install_playground(php_bin: &str, progress: impl Fn(&str)) -> Result<PathBuf> {
+/// one). With `fresh`, it downloads the latest Laravel even when a playground is
+/// already installed and swaps it in only once the new one is ready, so a failed
+/// update leaves the old playground working. `progress` is told about each step.
+pub fn install_playground(php_bin: &str, fresh: bool, progress: impl Fn(&str)) -> Result<PathBuf> {
     let php_bin = if php_bin.trim().is_empty() {
         crate::runner::resolve_php_binary()
     } else {
@@ -253,7 +326,7 @@ pub fn install_playground(php_bin: &str, progress: impl Fn(&str)) -> Result<Path
     let path = path_env(&dirs);
 
     // Composer finished before but setup didn't: just finish it.
-    if dir.join("artisan").is_file() && dir.join("vendor").join("autoload.php").is_file() {
+    if !fresh && dir.join("artisan").is_file() && dir.join("vendor").join("autoload.php").is_file() {
         progress("Setting up SQLite…");
         finish_setup(&php_bin, &dir, &path)?;
         return Ok(dir);
@@ -271,7 +344,7 @@ pub fn install_playground(php_bin: &str, progress: impl Fn(&str)) -> Result<Path
     // interrupted download never leaves a broken playground behind.
     let staging = parent.join("playground.installing");
     if staging.exists() {
-        std::fs::remove_dir_all(&staging).context("could not clear an old unfinished install")?;
+        remove_dir(&staging).context("could not clear an old unfinished install")?;
     }
 
     progress("Downloading Laravel…");
@@ -299,24 +372,59 @@ pub fn install_playground(php_bin: &str, progress: impl Fn(&str)) -> Result<Path
         cmd.env("PATH", p);
     }
     if let Err(e) = run_checked(cmd, "composer create-project") {
-        let _ = std::fs::remove_dir_all(&staging);
+        let _ = remove_dir(&staging);
         return Err(e);
     }
 
     progress("Setting up SQLite…");
     if let Err(e) = finish_setup(&php_bin, &staging, &path) {
-        let _ = std::fs::remove_dir_all(&staging);
+        let _ = remove_dir(&staging);
         return Err(e);
     }
 
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).context("could not replace the old playground")?;
+    // Move the old playground aside first, so it can be put back if the swap fails.
+    let previous = parent.join("playground.previous");
+    if previous.exists() {
+        let _ = remove_dir(&previous);
     }
-    std::fs::rename(&staging, &dir).context("could not move the playground into place")?;
+    if dir.exists() {
+        if let Err(e) = rename_dir(&dir, &previous) {
+            let _ = remove_dir(&staging);
+            return Err(e).context(
+                "could not move the old playground aside (is a program using a file in it?)",
+            );
+        }
+    }
+    if let Err(e) = rename_dir(&staging, &dir) {
+        if previous.exists() {
+            let _ = rename_dir(&previous, &dir);
+        }
+        let _ = remove_dir(&staging);
+        return Err(e).context("could not move the playground into place");
+    }
+    if previous.exists() {
+        // Not fatal: a leftover copy is cleared on the next update or removal.
+        let _ = remove_dir(&previous);
+    }
     // The SQLite path in config is relative to the app, so the move is safe; clear any
     // cached config that might still name the staging folder.
     let _ = std::fs::remove_file(dir.join("bootstrap").join("cache").join("config.php"));
     Ok(dir)
+}
+
+/// Deletes the playground folder, its SQLite database, and any unfinished install.
+pub fn remove_playground() -> Result<()> {
+    let dir = playground_dir();
+    if let Some(parent) = dir.parent() {
+        for leftover in ["playground.installing", "playground.previous"] {
+            let p = parent.join(leftover);
+            remove_dir(&p).with_context(|| format!("could not delete {}", p.display()))?;
+        }
+    }
+    remove_dir(&dir).with_context(|| {
+        format!("could not delete {} (is a program using a file in it?)", dir.display())
+    })?;
+    Ok(())
 }
 
 /// Drops every table and runs the migrations again, for a clean database.
@@ -376,6 +484,21 @@ mod tests {
     }
 
     #[test]
+    fn remove_dir_deletes_read_only_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("pg");
+        std::fs::create_dir_all(dir.join("vendor")).unwrap();
+        let file = dir.join("vendor").join("locked.php");
+        std::fs::write(&file, "<?php").unwrap();
+        let mut perms = std::fs::metadata(&file).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&file, perms).unwrap();
+        remove_dir(&dir).unwrap();
+        assert!(!dir.exists());
+        remove_dir(&dir).unwrap(); // already gone is fine
+    }
+
+    #[test]
     fn playground_path_is_recognized() {
         let p = playground_dir().to_string_lossy().to_string();
         assert!(is_playground_path(&p));
@@ -390,9 +513,18 @@ mod install_tests {
     #[test]
     #[ignore]
     fn playground_real_install() {
-        let dir = super::install_playground("", |m| eprintln!("{m}")).expect("install");
+        let dir = super::install_playground("", false, |m| eprintln!("{m}")).expect("install");
         assert!(super::is_playground_ready());
         assert!(dir.join("database/database.sqlite").metadata().unwrap().len() > 0);
         super::reset_playground_database("").expect("reset");
+        // Update: a fresh download replaces the existing one.
+        std::fs::write(dir.join("marker.txt"), "old").unwrap();
+        super::install_playground("", true, |m| eprintln!("{m}")).expect("update");
+        assert!(super::is_playground_ready());
+        assert!(!dir.join("marker.txt").exists());
+        assert!(!dir.parent().unwrap().join("playground.previous").exists());
+        super::remove_playground().expect("remove");
+        assert!(!dir.exists());
+        assert!(super::needs_download());
     }
 }

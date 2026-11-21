@@ -181,6 +181,8 @@ enum PlaygroundStatus {
     Idle,
     Installing(Arc<Mutex<String>>),
     Failed(String),
+    /// Finished an update or removal from Settings; the note is shown there.
+    Done(String),
 }
 
 pub struct LaralahApp {
@@ -1177,7 +1179,7 @@ impl LaralahApp {
         }
         if !crate::playground::needs_download() {
             // Laravel is already there; only the local setup is left.
-            self.install_playground(cx);
+            self.install_playground(false, true, cx);
             return;
         }
         // Native dialog on macOS and Windows; GPUI draws its own in-window one on Linux.
@@ -1196,17 +1198,130 @@ impl LaralahApp {
         );
         cx.spawn(async move |this, cx| {
             if answer.await == Ok(0) {
-                this.update(cx, |app, cx| app.install_playground(cx)).ok();
+                this.update(cx, |app, cx| app.install_playground(false, true, cx)).ok();
             }
         })
         .detach();
     }
 
-    fn install_playground(&mut self, cx: &mut Context<Self>) {
+    /// Settings → Update: replaces the playground with the latest stable Laravel.
+    fn confirm_update_playground(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.playground_status, PlaygroundStatus::Installing(_)) {
+            return;
+        }
+        let current = self
+            .playground_version
+            .as_deref()
+            .map(|v| format!("You have Laravel {v}. "))
+            .unwrap_or_default();
+        let detail = format!(
+            "{current}Laralah will download the latest stable Laravel with Composer and replace the playground in:\n{}\n\n\
+             Its SQLite database and any files changed in that folder start fresh. \
+             Code in your tabs is kept. If the download fails, the current playground stays as it is.",
+            crate::playground::display_dir()
+        );
+        let answer = window.prompt(
+            gpui::PromptLevel::Info,
+            "Update the Playground to the latest Laravel?",
+            Some(&detail),
+            &["Update", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await == Ok(0) {
+                this.update(cx, |app, cx| app.install_playground(true, false, cx)).ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Settings → Remove: deletes the playground folder and its database.
+    fn confirm_remove_playground(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.playground_status, PlaygroundStatus::Installing(_)) {
+            return;
+        }
+        let detail = format!(
+            "This permanently deletes {} with its SQLite database and any files in it. It can't be undone.\n\n\
+             Playground tabs will be closed. You can set the Playground up again any time.",
+            crate::playground::display_dir()
+        );
+        let answer = window.prompt(
+            gpui::PromptLevel::Warning,
+            "Remove the Playground?",
+            Some(&detail),
+            &["Remove", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            let Ok(step) = this.update(cx, |app, cx| {
+                app.release_playground_language_service(cx);
+                let step = Arc::new(Mutex::new(String::from("Removing…")));
+                app.playground_status = PlaygroundStatus::Installing(step.clone());
+                cx.notify();
+                step
+            }) else {
+                return;
+            };
+            let result = cx
+                .background_executor()
+                .spawn(async move { crate::playground::remove_playground() })
+                .await;
+            drop(step);
+            this.update(cx, |app, cx| {
+                match result {
+                    Ok(()) => {
+                        app.playground_status =
+                            PlaygroundStatus::Done("Playground removed.".to_string());
+                        app.playground_version = None;
+                        app.close_playground_tabs(cx);
+                    }
+                    Err(err) => {
+                        app.playground_status = PlaygroundStatus::Failed(format!("{err:#}"));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Stops the language server running in the playground folder, so Update and Remove
+    /// can move and delete it (Windows refuses while a process works in the folder).
+    /// Returns whether it was attached, so it can be started again afterwards.
+    fn release_playground_language_service(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.active_project_is_playground() {
+            return false;
+        }
+        self.editor.update(cx, |ed, cx| ed.clear_language_service(cx));
+        true
+    }
+
+    /// Closes every tab that runs code in the playground (after it was removed).
+    fn close_playground_tabs(&mut self, cx: &mut Context<Self>) {
+        for idx in (0..self.tabs.len()).rev() {
+            if self.tabs.len() > 1 && crate::playground::is_playground_path(&self.tabs[idx].project_path) {
+                self.close_tab_at(idx, cx);
+            }
+        }
+        if self.active_project_is_playground() {
+            // The last tab can't be closed; send it back to the Get Started screen.
+            self.show_landing = true;
+        }
+        cx.notify();
+    }
+
+    /// Installs the playground in the background. `fresh` downloads the latest Laravel
+    /// even when one is installed (Update); `open_after` opens it in a tab when done.
+    fn install_playground(&mut self, fresh: bool, open_after: bool, cx: &mut Context<Self>) {
         if matches!(self.playground_status, PlaygroundStatus::Installing(_)) {
             return;
         }
         let php_bin = self.settings.php_binary.clone();
+        let reattach_lsp = fresh && self.release_playground_language_service(cx);
         let step = Arc::new(Mutex::new(String::from("Preparing…")));
         self.playground_status = PlaygroundStatus::Installing(step.clone());
         cx.notify();
@@ -1225,7 +1340,7 @@ impl LaralahApp {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    crate::playground::install_playground(&php_bin, |msg| {
+                    crate::playground::install_playground(&php_bin, fresh, |msg| {
                         if let Ok(mut s) = step.lock() {
                             *s = msg.to_string();
                         }
@@ -1233,11 +1348,33 @@ impl LaralahApp {
                 })
                 .await;
             drop(ticker);
+            this.update(cx, |app, cx| {
+                // Start the language service again on the new (or the kept) playground.
+                if reattach_lsp && app.active_project_is_playground() {
+                    let path = app.active_project.clone();
+                    app.attach_project_lsp(&path, cx);
+                }
+            })
+            .ok();
             this.update(cx, |app, cx| match result {
                 Ok(dir) => {
-                    app.playground_status = PlaygroundStatus::Idle;
+                    let before = app.playground_version.clone();
                     app.playground_version = playground_laravel_version();
-                    app.open_project_path(dir.to_string_lossy().to_string(), cx);
+                    app.playground_status = match (fresh, &before, &app.playground_version) {
+                        (true, Some(old), Some(new)) if old == new => PlaygroundStatus::Done(format!(
+                            "Reinstalled. Laravel {new} is already the latest stable version."
+                        )),
+                        (true, Some(old), Some(new)) => {
+                            PlaygroundStatus::Done(format!("Updated from Laravel {old} to {new}."))
+                        }
+                        (true, _, Some(new)) => PlaygroundStatus::Done(format!("Installed Laravel {new}.")),
+                        _ => PlaygroundStatus::Idle,
+                    };
+                    if open_after {
+                        app.open_project_path(dir.to_string_lossy().to_string(), cx);
+                    } else {
+                        cx.notify();
+                    }
                 }
                 Err(err) => {
                     app.playground_status = PlaygroundStatus::Failed(format!("{err:#}"));
@@ -1277,7 +1414,7 @@ impl LaralahApp {
         match &self.playground_status {
             PlaygroundStatus::Installing(step) => step.lock().map(|s| s.clone()).unwrap_or_default(),
             PlaygroundStatus::Failed(_) => "Setup failed · click to try again".to_string(),
-            PlaygroundStatus::Idle => match &self.playground_version {
+            PlaygroundStatus::Idle | PlaygroundStatus::Done(_) => match &self.playground_version {
                 Some(v) => format!("Laravel {v} · SQLite · ready"),
                 None => "Try code in a fresh Laravel app with SQLite".to_string(),
             },
@@ -9659,6 +9796,84 @@ impl LaralahApp {
                         .into_any_element(),
                     Some("Workspace history shown on the Get Started screen."),
                 )
+            }
+            SettingKey::Playground => {
+                let busy = matches!(self.playground_status, PlaygroundStatus::Installing(_));
+                let installed = self.playground_version.is_some();
+                let (status_text, status_color) = match &self.playground_status {
+                    PlaygroundStatus::Installing(step) => (
+                        step.lock().map(|s| s.clone()).unwrap_or_default(),
+                        0xfbbf24,
+                    ),
+                    PlaygroundStatus::Failed(_) => ("Last action failed".to_string(), 0xf87171),
+                    PlaygroundStatus::Done(_) | PlaygroundStatus::Idle => match &self.playground_version {
+                        Some(v) => (format!("Laravel {v}"), 0x94a3b8),
+                        None => ("Not installed".to_string(), 0x94a3b8),
+                    },
+                };
+                let note: Option<(String, u32)> = match &self.playground_status {
+                    PlaygroundStatus::Failed(msg) => Some((msg.clone(), 0xf87171)),
+                    PlaygroundStatus::Done(msg) => Some((msg.clone(), 0x4ade80)),
+                    _ => None,
+                };
+                let caption = format!(
+                    "A Laravel app with SQLite for trying code, saved in {}. Update downloads the latest stable Laravel and starts its database fresh.",
+                    crate::playground::display_dir()
+                );
+                let control = div()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(status_color))
+                                    .child(status_text),
+                            )
+                            .when(!busy && installed, |el| {
+                                el.child(settings_action_btn(
+                                    "settings-playground-update",
+                                    "Update",
+                                    cx.listener(|this, _, window, cx| {
+                                        this.confirm_update_playground(window, cx);
+                                    }),
+                                ))
+                                .child(settings_action_btn(
+                                    "settings-playground-remove",
+                                    "Remove",
+                                    cx.listener(|this, _, window, cx| {
+                                        this.confirm_remove_playground(window, cx);
+                                    }),
+                                ))
+                            })
+                            .when(!busy && !installed, |el| {
+                                el.child(settings_action_btn(
+                                    "settings-playground-setup",
+                                    "Set up",
+                                    cx.listener(|this, _, window, cx| {
+                                        this.open_playground(window, cx);
+                                    }),
+                                ))
+                            }),
+                    )
+                    .when_some(note, |el, (msg, color)| {
+                        el.child(
+                            div()
+                                .max_w(px(320.0))
+                                .text_xs()
+                                .text_color(rgb(color))
+                                .child(msg),
+                        )
+                    })
+                    .into_any_element();
+                settings_row("Laravel Playground", control, Some(&caption))
             }
         }
     }

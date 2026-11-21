@@ -412,6 +412,13 @@ impl CodeEditor {
         }
     }
 
+    /// Drops the project's language service (and stops its external server, if any).
+    pub fn clear_language_service(&mut self, cx: &mut Context<Self>) {
+        self.lsp = None;
+        self.completion_popup = None;
+        cx.notify();
+    }
+
     pub fn set_language_service(
         &mut self,
         lsp: Arc<LaravelLanguageService>,

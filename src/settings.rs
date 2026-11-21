@@ -363,6 +363,8 @@ pub enum SettingKey {
     CollisionEnabled,
     AutocompletionServicePort,
     RecentFolders,
+    // Advanced -> Playground
+    Playground,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -621,6 +623,13 @@ pub fn all_setting_specs() -> &'static [SettingMeta] {
             label: "Recent folders",
             keywords: "clear history workspaces recent projects",
         },
+        SettingMeta {
+            key: SettingKey::Playground,
+            tab: SettingsTab::Advanced,
+            section: "Playground",
+            label: "Laravel Playground",
+            keywords: "playground laravel update upgrade latest version remove delete clean reinstall sqlite sandbox",
+        },
     ]
 }
 
@@ -702,6 +711,7 @@ fn dynamic_value_haystack(
         SettingKey::CollisionEnabled => if s.collision_enabled { "yes" } else { "no" }.to_string(),
         SettingKey::AutocompletionServicePort => s.autocompletion_service_port.to_string(),
         SettingKey::RecentFolders => "clear stored".to_string(),
+        SettingKey::Playground => "update remove".to_string(),
     }
 }
 
