@@ -16,6 +16,7 @@ mod object_graph;
 mod paths;
 mod runner;
 mod selectable;
+mod shortcut;
 mod settings;
 mod ssh;
 mod theme;

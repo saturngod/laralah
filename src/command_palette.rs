@@ -77,7 +77,7 @@ pub fn filter_palette_entries(
                     prefix_tag: "/",
                     title: "Open Local Directory...".to_string(),
                     subtitle: "Browse for a Laravel folder in macOS Finder".to_string(),
-                    shortcut: "Cmd+O",
+                    shortcut: crate::shortcut::label("Cmd+O"),
                     action: PaletteAction::OpenDirectoryDialog,
                 },
             );
@@ -155,7 +155,7 @@ pub fn filter_palette_entries(
             prefix_tag: "/",
             title: "Open Local Directory...".to_string(),
             subtitle: "Choose a Laravel folder from macOS Finder".to_string(),
-            shortcut: "Cmd+O",
+            shortcut: crate::shortcut::label("Cmd+O"),
             action: PaletteAction::OpenDirectoryDialog,
         },
         PaletteEntry {
@@ -163,7 +163,7 @@ pub fn filter_palette_entries(
             prefix_tag: "@",
             title: "Manage SSH Connections...".to_string(),
             subtitle: "Create, edit, group, and connect to remote Laravel servers via SSH".to_string(),
-            shortcut: "Cmd+K",
+            shortcut: crate::shortcut::label("Cmd+K"),
             action: PaletteAction::OpenSshManager,
         },
         PaletteEntry {
@@ -171,7 +171,7 @@ pub fn filter_palette_entries(
             prefix_tag: ">",
             title: "Toggle AI Assistant Sidebar".to_string(),
             subtitle: "Expand or collapse the right-side AI coding assistant".to_string(),
-            shortcut: "Cmd+I",
+            shortcut: crate::shortcut::label("Cmd+I"),
             action: PaletteAction::ToggleAiSidebar,
         },
         PaletteEntry {
@@ -187,7 +187,7 @@ pub fn filter_palette_entries(
             prefix_tag: ">",
             title: "Open Settings".to_string(),
             subtitle: "Configure PHP binary, layout, editor font, and advanced options".to_string(),
-            shortcut: "Cmd+,",
+            shortcut: crate::shortcut::label("Cmd+,"),
             action: PaletteAction::OpenSettings,
         },
         PaletteEntry {
@@ -203,7 +203,7 @@ pub fn filter_palette_entries(
             prefix_tag: ">",
             title: "Run Laravel Code".to_string(),
             subtitle: "Execute active scratchpad tab in current Laravel environment".to_string(),
-            shortcut: "Cmd+R",
+            shortcut: crate::shortcut::label("Cmd+R"),
             action: PaletteAction::RunCode,
         },
         PaletteEntry {
@@ -219,7 +219,7 @@ pub fn filter_palette_entries(
             prefix_tag: ">",
             title: "Open Laravel Log Viewer".to_string(),
             subtitle: "Inspect, filter, and live-tail storage/logs/*.log".to_string(),
-            shortcut: "Cmd+L",
+            shortcut: crate::shortcut::label("Cmd+L"),
             action: PaletteAction::OpenLogViewer,
         },
         PaletteEntry {
@@ -227,7 +227,7 @@ pub fn filter_palette_entries(
             prefix_tag: ">",
             title: "View: Detail Dive (Object Graph)".to_string(),
             subtitle: "Switch output panel to interactive Detail Dive cards".to_string(),
-            shortcut: "Cmd+1",
+            shortcut: crate::shortcut::label("Cmd+1"),
             action: PaletteAction::SwitchOutputMode(OutputMode::DetailDive),
         },
         PaletteEntry {
@@ -235,7 +235,7 @@ pub fn filter_palette_entries(
             prefix_tag: ">",
             title: "View: Table Mode".to_string(),
             subtitle: "Switch output panel to searchable, sortable Table Mode".to_string(),
-            shortcut: "Cmd+2",
+            shortcut: crate::shortcut::label("Cmd+2"),
             action: PaletteAction::SwitchOutputMode(OutputMode::TableMode),
         },
         PaletteEntry {
@@ -243,7 +243,7 @@ pub fn filter_palette_entries(
             prefix_tag: ">",
             title: "Toggle CLI Output".to_string(),
             subtitle: "Toggle between Detail Dive / Table and PsySH-style CLI result".to_string(),
-            shortcut: "Cmd+3",
+            shortcut: crate::shortcut::label("Cmd+3"),
             action: PaletteAction::SwitchOutputMode(OutputMode::RawCli),
         },
         PaletteEntry {
@@ -251,7 +251,7 @@ pub fn filter_palette_entries(
             prefix_tag: ">",
             title: "View: SQL Queries".to_string(),
             subtitle: "Inspect DB::listen() SQL queries, bindings, and N+1 duplicates".to_string(),
-            shortcut: "Cmd+S",
+            shortcut: crate::shortcut::label("Cmd+S"),
             action: PaletteAction::SwitchOutputMode(OutputMode::SqlQueries),
         },
         PaletteEntry {
@@ -283,7 +283,7 @@ pub fn filter_palette_entries(
             prefix_tag: ">",
             title: "New Scratchpad Tab".to_string(),
             subtitle: "Open a new Laravel REPL tab".to_string(),
-            shortcut: "Cmd+T",
+            shortcut: crate::shortcut::label("Cmd+T"),
             action: PaletteAction::NewTab,
         },
         PaletteEntry {

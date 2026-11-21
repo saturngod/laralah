@@ -3303,7 +3303,7 @@ impl LaralahApp {
                                     .font_family("Menlo")
                                     .text_xs()
                                     .text_color(theme::pick(0x94a3b8, 0xbfdbfe))
-                                    .child("⌘R"),
+                                    .child(crate::shortcut::label("⌘R")),
                             ),
                     )
                     // Right AI Assistant Sidebar Toggle (`⌘ + I`)
@@ -3455,7 +3455,7 @@ impl LaralahApp {
                                 .on_mouse_down(
                                     gpui::MouseButton::Left,
                                     cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
-                                        if ev.modifiers.control {
+                                        if cfg!(target_os = "macos") && ev.modifiers.control {
                                             cx.stop_propagation();
                                             this.active_dropdown_id = None;
                                             this.tab_context_menu = Some((idx, ev.position));
@@ -3766,7 +3766,7 @@ impl LaralahApp {
                     TEXT_MAIN
                 },
                 cx.listener(|this, hovered: &bool, _, cx| {
-                    this.set_rail_hover(1, "Project Explorer (⌘ + B)", *hovered, cx);
+                    this.set_rail_hover(1, crate::shortcut::label("Project Explorer (⌘ + B)"), *hovered, cx);
                 }),
                 cx.listener(|this, _, _, cx| {
                     if this.show_landing {
@@ -3785,7 +3785,7 @@ impl LaralahApp {
                 false,
                 TEXT_MAIN,
                 cx.listener(|this, hovered: &bool, _, cx| {
-                    this.set_rail_hover(2, "Open Folder (⌘ + O)", *hovered, cx);
+                    this.set_rail_hover(2, crate::shortcut::label("Open Folder (⌘ + O)"), *hovered, cx);
                 }),
                 cx.listener(|this, _, _, cx| {
                     this.open_directory_dialog(cx);
@@ -3801,7 +3801,7 @@ impl LaralahApp {
                     TEXT_MAIN
                 },
                 cx.listener(|this, hovered: &bool, _, cx| {
-                    this.set_rail_hover(3, "SSH Connections (⌘ + K)", *hovered, cx);
+                    this.set_rail_hover(3, crate::shortcut::label("SSH Connections (⌘ + K)"), *hovered, cx);
                 }),
                 cx.listener(|this, _, window, cx| {
                     if this.overlay == OverlayKind::SshConnections {
@@ -3830,7 +3830,7 @@ impl LaralahApp {
                     TEXT_MAIN
                 },
                 cx.listener(|this, hovered: &bool, _, cx| {
-                    this.set_rail_hover(5, "Logs Viewer (⌘ + L)", *hovered, cx);
+                    this.set_rail_hover(5, crate::shortcut::label("Logs Viewer (⌘ + L)"), *hovered, cx);
                 }),
                 cx.listener(|this, _, window, cx| {
                     if this.overlay == OverlayKind::LogViewer {
@@ -3850,7 +3850,7 @@ impl LaralahApp {
                     TEXT_MAIN
                 },
                 cx.listener(|this, hovered: &bool, _, cx| {
-                    this.set_rail_hover(6, "Command Palette (⌘ + P)", *hovered, cx);
+                    this.set_rail_hover(6, crate::shortcut::label("Command Palette (⌘ + P)"), *hovered, cx);
                 }),
                 cx.listener(|this, _, window, cx| {
                     this.open_palette("", window, cx);
@@ -3868,7 +3868,7 @@ impl LaralahApp {
                         TEXT_MAIN
                     },
                     cx.listener(|this, hovered: &bool, _, cx| {
-                        this.set_rail_hover(99, "Settings (⌘ + ,)", *hovered, cx);
+                        this.set_rail_hover(99, crate::shortcut::label("Settings (⌘ + ,)"), *hovered, cx);
                     }),
                     cx.listener(|this, _, window, cx| {
                         if this.overlay == OverlayKind::Settings {
@@ -4505,7 +4505,7 @@ impl LaralahApp {
                                                     .text_color(rgb(0x334155))
                                                     .child("Search commands"),
                                             )
-                                            .child(landing_keycap("⌘ P")),
+                                            .child(landing_keycap(crate::shortcut::label("⌘ P"))),
                                     )
                                     .child(
                                         div()
@@ -4553,7 +4553,7 @@ impl LaralahApp {
                                     0xeff6ff,
                                     "Open Local Project",
                                     "Choose any Laravel or Composer directory",
-                                    "⌘ O",
+                                    crate::shortcut::label("⌘ O"),
                                     cx.listener(|this, _, _, cx| {
                                         this.open_directory_dialog(cx);
                                     }),
@@ -4568,7 +4568,7 @@ impl LaralahApp {
                                         0xf0fdfa,
                                         "Connect to Server",
                                         "Run code on Forge or SSH servers",
-                                        "⌘ K",
+                                        crate::shortcut::label("⌘ K"),
                                         cx.listener(|this, _, window, cx| {
                                             this.open_ssh_modal(window, cx);
                                         }),
@@ -4609,7 +4609,7 @@ impl LaralahApp {
                                         el.child(landing_empty_state(
                                             "icons/folder.svg",
                                             "No recent workspaces yet",
-                                            "Open a Laravel folder with ⌘ O and it will show up here.",
+                                            crate::shortcut::label("Open a Laravel folder with ⌘ O and it will show up here."),
                                         ))
                                     })
                                     .child(
@@ -4746,7 +4746,7 @@ impl LaralahApp {
                                         el.child(landing_empty_state(
                                             "icons/server.svg",
                                             "No saved servers",
-                                            "Add a Forge or SSH host with ⌘ K.",
+                                            crate::shortcut::label("Add a Forge or SSH host with ⌘ K."),
                                         ))
                                     })
                                     .child(
@@ -4871,9 +4871,9 @@ impl LaralahApp {
                             .gap_x_5()
                             .gap_y_2()
                             .child(landing_shortcut_chip("⌃ Space", "Autocomplete"))
-                            .child(landing_shortcut_chip("⌘ L", "Logs viewer"))
-                            .child(landing_shortcut_chip("⌘ 3", "CLI result"))
-                            .child(landing_shortcut_chip("⌘ ,", "Settings")),
+                            .child(landing_shortcut_chip(crate::shortcut::label("⌘ L"), "Logs viewer"))
+                            .child(landing_shortcut_chip(crate::shortcut::label("⌘ 3"), "CLI result"))
+                            .child(landing_shortcut_chip(crate::shortcut::label("⌘ ,"), "Settings")),
                     ),
             )
     }
@@ -5011,7 +5011,7 @@ impl LaralahApp {
                                             this.ai_editor_undo_banner = false;
                                             cx.notify();
                                         }))
-                                        .child("✓ Written by AI · Undo (⌘Z)"),
+                                        .child(crate::shortcut::label("✓ Written by AI · Undo (⌘Z)")),
                                 )
                             })
                             .child(
@@ -5187,7 +5187,7 @@ impl LaralahApp {
                         div()
                             .text_xs()
                             .text_color(rgb(TEXT_MUTED))
-                            .child("Press ⌘ + R or click Run in the toolbar"),
+                            .child(crate::shortcut::label("Press ⌘ + R or click Run in the toolbar")),
                     )
                     .into_any_element(),
                 Some(res) => match self.output_mode {
@@ -7307,7 +7307,7 @@ impl LaralahApp {
                                             .child(table_export_menu_item(
                                                 "tp-exp-copy-csv",
                                                 "Copy CSV",
-                                                "⌘C",
+                                                crate::shortcut::label("⌘C"),
                                                 cx.listener(|this, _, _, cx| {
                                                     cx.stop_propagation();
                                                     this.active_dropdown_id = None;
@@ -7768,7 +7768,7 @@ impl LaralahApp {
                                 div()
                                     .text_xs()
                                     .text_color(rgb(0x94a3b8))
-                                    .child("Hit ⌘ + R to refresh. This will run the complete code again."),
+                                    .child(crate::shortcut::label("Hit ⌘ + R to refresh. This will run the complete code again.")),
                             ),
                     ),
             )
@@ -8103,7 +8103,7 @@ impl LaralahApp {
                     },
                     cx,
                 ),
-                Some("Confirm before closing a scratchpad tab with `⌘ W`."),
+                Some(crate::shortcut::label("Confirm before closing a scratchpad tab with `⌘ W`.")),
             ),
             SettingKey::WelcomeTab => settings_row(
                 "Welcome tab",
@@ -8197,7 +8197,7 @@ impl LaralahApp {
                     },
                     cx,
                 ),
-                Some("Show the Models & Mailables sidebar. Toggle it any time with `⌘ B`."),
+                Some(crate::shortcut::label("Show the Models & Mailables sidebar. Toggle it any time with `⌘ B`.")),
             ),
             SettingKey::AlwaysOnTop => settings_row(
                 "Always on top",
@@ -8235,7 +8235,7 @@ impl LaralahApp {
                     "settings-auto-eval",
                     s.auto_evaluate_code,
                     "Yes — Automatically evaluate",
-                    "No — Run manually (⌘ R)",
+                    crate::shortcut::label("No — Run manually (⌘ R)"),
                     |this, val, _, cx| {
                         this.settings.auto_evaluate_code = val;
                         this.auto_run = val && !this.active_target.is_ssh();
@@ -8558,7 +8558,7 @@ impl LaralahApp {
                         }),
                     ))
                     .into_any_element(),
-                Some("Show the AI assistant sidebar on the right. Toggle it with `⌘ I`."),
+                Some(crate::shortcut::label("Show the AI assistant sidebar on the right. Toggle it with `⌘ I`.")),
             ),
             SettingKey::AiAutoWrite => settings_row(
                 "Auto-write code to editor",
@@ -8580,7 +8580,7 @@ impl LaralahApp {
                         }),
                     ))
                     .into_any_element(),
-                Some("Automatically write generated Eloquent / PHP snippets into the active scratchpad — undo with `⌘ Z`."),
+                Some(crate::shortcut::label("Automatically write generated Eloquent / PHP snippets into the active scratchpad — undo with `⌘ Z`.")),
             ),
             SettingKey::AiAllowSshSchema => settings_row(
                 "Allow schema inspection on SSH",
@@ -9181,7 +9181,7 @@ impl LaralahApp {
                                                         .font_family("Menlo")
                                                         .text_xs()
                                                         .text_color(rgb(0x94a3b8))
-                                                        .child("⌘ F"),
+                                                        .child(crate::shortcut::label("⌘ F")),
                                                 )
                                             })
                                             .when(is_searching, |bar| {
@@ -9773,7 +9773,7 @@ impl LaralahApp {
                                             .border_color(rgb(0x3b4558))
                                             .text_xs()
                                             .text_color(rgb(0x94a3b8))
-                                            .child("⌘F"),
+                                            .child(crate::shortcut::label("⌘F")),
                                     ),
                             )
                             .child(
@@ -12393,7 +12393,7 @@ impl LaralahApp {
             .child(ctx_item(
                 "tab-ctx-close",
                 "Close",
-                if is_target_active { Some("⌘W") } else { None },
+                if is_target_active { Some(crate::shortcut::label("⌘W")) } else { None },
                 target_idx < tab_count,
                 Box::new(move |this, cx| this.close_tab_at(target_idx, cx)),
                 cx,
@@ -13505,7 +13505,7 @@ fn render_shortcuts_card(rows: &[(&'static str, &'static str)]) -> gpui::AnyElem
                         .flex_row()
                         .items_center()
                         .gap_1p5()
-                        .children(keys.split(" / ").enumerate().flat_map(|(k_idx, combo)| {
+                        .children(crate::shortcut::label(keys).split(" / ").enumerate().flat_map(|(k_idx, combo)| {
                             let sep = (k_idx > 0).then(|| {
                                 div()
                                     .text_xs()
