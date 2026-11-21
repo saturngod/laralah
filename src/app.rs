@@ -91,6 +91,9 @@ actions!(
     ]
 );
 
+/// Left inset for custom top bars: room for the traffic lights on macOS, a plain gutter elsewhere.
+const TITLEBAR_LEFT_INSET: f32 = if cfg!(target_os = "macos") { 80.0 } else { 12.0 };
+
 // Clean Light Studio Palette (matching reference screenshot)
 const BG_WINDOW: u32 = 0xffffff;
 const BG_RAIL: u32 = 0xfbfbfc;
@@ -2996,7 +2999,7 @@ impl LaralahApp {
             .items_center()
             .justify_between()
             .gap_3()
-            .pl(px(80.0))
+            .pl(px(TITLEBAR_LEFT_INSET))
             .pr_3()
             // Left cluster: Sidebar toggle + Project selector pill + Target badge
             .child(
@@ -9237,7 +9240,7 @@ impl LaralahApp {
                 div()
                     .h(px(40.0))
                     .flex_none()
-                    .pl(px(86.0))
+                    .pl(px(TITLEBAR_LEFT_INSET + 6.0))
                     .pr_4()
                     .bg(rgb(0x171a21))
                     .border_b_1()
@@ -9910,7 +9913,7 @@ impl LaralahApp {
                 div()
                     .h(px(40.0))
                     .flex_none()
-                    .pl(px(86.0))
+                    .pl(px(TITLEBAR_LEFT_INSET + 6.0))
                     .pr_4()
                     .bg(rgb(0x171a21))
                     .border_b_1()
