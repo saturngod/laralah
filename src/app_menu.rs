@@ -4,7 +4,7 @@
 
 use crate::app::{
     CloseScratchTab, FormatCode, ModeDetailDive, ModeRawCli, ModeTable, NewScratchTab,
-    NextScratchTab, OpenDirectory, PrevScratchTab, QuitApp, RunCode, ToggleAiSidebar, ToggleLogs,
+    NextScratchTab, OpenDirectory, OpenPlayground, PrevScratchTab, QuitApp, RunCode, ToggleAiSidebar, ToggleLogs,
     TogglePalette, ToggleSettings, ToggleSidebar, ToggleSql, ToggleSshModal,
 };
 use crate::editor::{Copy, Cut, Paste, Redo, SelectAll, TriggerCompletion, Undo};
@@ -108,6 +108,7 @@ pub fn app_menus(style: MenuStyle) -> Vec<AppMenu> {
     let mut file = vec![
         item!("New Tab", NewScratchTab, spec "new_tab"),
         item!("Open Folder…", OpenDirectory, spec "open_folder"),
+        item!("Open Playground", OpenPlayground, spec "open_playground"),
         item!("Connect to Server…", ToggleSshModal, spec "ssh_connections"),
         SEP,
         item!("Close Tab", CloseScratchTab, spec "close_tab"),

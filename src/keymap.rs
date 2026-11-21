@@ -11,7 +11,7 @@
 use crate::app::{
     CloseOverlay, CloseScratchTab, FocusLogSearch, FocusSettingsSearch, FocusSshSearch,
     GraphFitView, GraphZoomIn, GraphZoomOut, ModeDetailDive, ModeRawCli, ModeTable, NewScratchTab,
-    NextScratchTab, OpenDirectory, PaletteConfirm, PaletteDown, PaletteUp, PrevScratchTab, QuitApp,
+    NextScratchTab, OpenDirectory, OpenPlayground, PaletteConfirm, PaletteDown, PaletteUp, PrevScratchTab, QuitApp,
     FormatCode, RunCode, SubmitAiPrompt, ToggleAiSidebar, ToggleLogs, TogglePalette, ToggleSettings,
     ToggleSidebar, ToggleSql, ToggleSshModal,
 };
@@ -141,6 +141,7 @@ pub fn shortcut_specs() -> &'static [ShortcutSpec] {
             [target!(NextScratchTab)]
         ),
         spec!("open_folder", "Open local folder", ["secondary-o"], [target!(OpenDirectory)]),
+        spec!("open_playground", "Open playground", ["secondary-shift-o"], [target!(OpenPlayground)]),
         spec!("ssh_connections", "SSH connections", ["secondary-k"], [target!(ToggleSshModal)]),
         spec!(
             "toggle_ai_sidebar",

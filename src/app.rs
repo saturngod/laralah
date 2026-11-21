@@ -64,6 +64,7 @@ actions!(
         RunCode,
         FormatCode,
         OpenDirectory,
+        OpenPlayground,
         ToggleSidebar,
         ToggleAiSidebar,
         SubmitAiPrompt,
@@ -175,6 +176,13 @@ struct ScratchTab {
     output_mode: OutputMode,
 }
 
+#[derive(Clone)]
+enum PlaygroundStatus {
+    Idle,
+    Installing(Arc<Mutex<String>>),
+    Failed(String),
+}
+
 pub struct LaralahApp {
     focus_handle: FocusHandle,
     /// Text selection shared by the output pane's Detail Dive / CLI / SQL text.
@@ -263,6 +271,10 @@ pub struct LaralahApp {
     active_target: ExecutionTarget,
     auto_run: bool,
     is_running: bool,
+    /// Playground install in progress (step text), or the last install error.
+    playground_status: PlaygroundStatus,
+    /// Laravel version of the installed playground, if there is one.
+    playground_version: Option<String>,
     eval_seq: u64,
     auto_run_seq: u64,
     last_result: Option<EvaluationResult>,
@@ -751,6 +763,8 @@ impl LaralahApp {
             active_target,
             auto_run,
             is_running: false,
+            playground_status: PlaygroundStatus::Idle,
+            playground_version: playground_laravel_version(),
             eval_seq: 0,
             auto_run_seq: 0,
             last_result: None,
@@ -1149,9 +1163,136 @@ impl LaralahApp {
         .detach();
     }
 
+    /// Opens the Playground. The first time, it asks before downloading Laravel, then
+    /// creates it (latest Laravel + SQLite).
+    pub fn open_playground(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.playground_status, PlaygroundStatus::Installing(_)) {
+            return;
+        }
+        if crate::playground::is_playground_ready() {
+            self.playground_status = PlaygroundStatus::Idle;
+            let path = crate::playground::playground_dir().to_string_lossy().to_string();
+            self.open_project_path(path, cx);
+            return;
+        }
+        if !crate::playground::needs_download() {
+            // Laravel is already there; only the local setup is left.
+            self.install_playground(cx);
+            return;
+        }
+        // Native dialog on macOS and Windows; GPUI draws its own in-window one on Linux.
+        let detail = format!(
+            "Laralah will download the latest stable Laravel with Composer and set it up with a SQLite database. \
+             This happens only once and needs an internet connection.\n\n\
+             Your playground code will be saved in:\n{}",
+            crate::playground::display_dir()
+        );
+        let answer = window.prompt(
+            gpui::PromptLevel::Info,
+            "Set up the Laravel Playground?",
+            Some(&detail),
+            &["Download", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await == Ok(0) {
+                this.update(cx, |app, cx| app.install_playground(cx)).ok();
+            }
+        })
+        .detach();
+    }
+
+    fn install_playground(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.playground_status, PlaygroundStatus::Installing(_)) {
+            return;
+        }
+        let php_bin = self.settings.php_binary.clone();
+        let step = Arc::new(Mutex::new(String::from("Preparing…")));
+        self.playground_status = PlaygroundStatus::Installing(step.clone());
+        cx.notify();
+
+        // Repaint while the install runs so the tile shows each step.
+        let ticker = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(400)).await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        });
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::playground::install_playground(&php_bin, |msg| {
+                        if let Ok(mut s) = step.lock() {
+                            *s = msg.to_string();
+                        }
+                    })
+                })
+                .await;
+            drop(ticker);
+            this.update(cx, |app, cx| match result {
+                Ok(dir) => {
+                    app.playground_status = PlaygroundStatus::Idle;
+                    app.playground_version = playground_laravel_version();
+                    app.open_project_path(dir.to_string_lossy().to_string(), cx);
+                }
+                Err(err) => {
+                    app.playground_status = PlaygroundStatus::Failed(format!("{err:#}"));
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Empties the playground's SQLite database and runs the migrations again.
+    fn reset_playground_database(&mut self, cx: &mut Context<Self>) {
+        let php_bin = self.settings.php_binary.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { crate::playground::reset_playground_database(&php_bin) })
+                .await;
+            this.update(cx, |app, cx| {
+                app.playground_status = match result {
+                    Ok(()) => PlaygroundStatus::Idle,
+                    Err(err) => PlaygroundStatus::Failed(format!("{err:#}")),
+                };
+                if app.active_project_is_playground() {
+                    app.run_evaluation(cx);
+                } else {
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn playground_tile_subtitle(&self) -> String {
+        match &self.playground_status {
+            PlaygroundStatus::Installing(step) => step.lock().map(|s| s.clone()).unwrap_or_default(),
+            PlaygroundStatus::Failed(_) => "Setup failed · click to try again".to_string(),
+            PlaygroundStatus::Idle => match &self.playground_version {
+                Some(v) => format!("Laravel {v} · SQLite · ready"),
+                None => "Try code in a fresh Laravel app with SQLite".to_string(),
+            },
+        }
+    }
+
+    fn active_project_is_playground(&self) -> bool {
+        crate::playground::is_playground_path(&self.active_project)
+    }
+
     pub fn open_project_path(&mut self, path: String, cx: &mut Context<Self>) {
         self.projects.retain(|p| p != &path);
-        self.projects.insert(0, path.clone());
+        if !crate::playground::is_playground_path(&path) {
+            self.projects.insert(0, path.clone());
+        }
         save_recent_folders(&self.projects);
 
         // If already viewing this exact local workspace, preserve everything as-is
@@ -1180,12 +1321,16 @@ impl LaralahApp {
             return;
         }
 
-        let folder_title = std::path::Path::new(&path)
+        let folder_title = if crate::playground::is_playground_path(&path) {
+            "Playground".to_string()
+        } else {
+            std::path::Path::new(&path)
             .file_name()
             .and_then(|s| s.to_str())
             .filter(|s| !s.is_empty())
             .unwrap_or("Workspace")
-            .to_string();
+            .to_string()
+        };
 
         let local = ExecutionTarget::Local {
             project_path: path.clone(),
@@ -2472,6 +2617,12 @@ impl LaralahApp {
             PaletteAction::OpenDirectoryDialog => {
                 self.open_directory_dialog(cx);
             }
+            PaletteAction::OpenPlayground => {
+                self.open_playground(window, cx);
+            }
+            PaletteAction::ResetPlaygroundDatabase => {
+                self.reset_playground_database(cx);
+            }
             PaletteAction::ShowLandingPage => {
                 self.show_landing = true;
                 window.focus(&self.focus_handle);
@@ -3040,6 +3191,9 @@ impl LaralahApp {
 
     fn on_open_directory(&mut self, _: &OpenDirectory, _: &mut Window, cx: &mut Context<Self>) {
         self.open_directory_dialog(cx);
+    }
+    fn on_open_playground(&mut self, _: &OpenPlayground, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_playground(window, cx);
     }
     fn on_toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
         if !self.settings.show_explorer {
@@ -4810,6 +4964,60 @@ impl LaralahApp {
             )
     }
 
+    fn render_playground_error(&self, msg: String, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("playground-error")
+            .px_4()
+            .py_3()
+            .rounded_xl()
+            .bg(rgb(0xfef2f2))
+            .border_1()
+            .border_color(rgb(0xfecaca))
+            .flex()
+            .flex_row()
+            .items_start()
+            .gap_3()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(rgb(0x991b1b))
+                            .child("Could not set up the Playground"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_family("monospace")
+                            .text_color(rgb(0x7f1d1d))
+                            .child(msg),
+                    ),
+            )
+            .child(
+                div()
+                    .id("playground-error-dismiss")
+                    .flex_none()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(0xfee2e2)))
+                    .text_xs()
+                    .text_color(rgb(0x991b1b))
+                    .child("Dismiss")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.playground_status = PlaygroundStatus::Idle;
+                        cx.notify();
+                    })),
+            )
+    }
+
     fn render_landing_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         const SIDE_COL_W: f32 = 340.0;
         let php_missing = !is_php_detected(&self.detected_php_version);
@@ -5005,18 +5213,41 @@ impl LaralahApp {
                             .flex_row()
                             .gap_4()
                             .child(
-                                div().flex_1().min_w(px(0.0)).flex().child(landing_primary_tile(
-                                    "land-tile-open-dir",
-                                    "icons/folder.svg",
-                                    0x2563eb,
-                                    0xeff6ff,
-                                    "Open Local Project",
-                                    "Choose any Laravel or Composer directory",
-                                    crate::keymap::hint("open_folder"),
-                                    cx.listener(|this, _, _, cx| {
-                                        this.open_directory_dialog(cx);
-                                    }),
-                                )),
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .flex()
+                                    .flex_row()
+                                    .gap_4()
+                                    .child(landing_primary_tile(
+                                        "land-tile-open-dir",
+                                        "icons/folder.svg",
+                                        0x2563eb,
+                                        0xeff6ff,
+                                        "Open Local Project",
+                                        "Choose any Laravel or Composer directory",
+                                        crate::keymap::hint("open_folder"),
+                                        None,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.open_directory_dialog(cx);
+                                        }),
+                                    ))
+                                    .child(landing_primary_tile(
+                                        "land-tile-playground",
+                                        "icons/bolt.svg",
+                                        0xdc2626,
+                                        0xfef2f2,
+                                        "Laravel Playground",
+                                        &self.playground_tile_subtitle(),
+                                        crate::keymap::hint("open_playground"),
+                                        Some(SharedString::from(format!(
+                                            "Playground code lives in {}",
+                                            crate::playground::display_dir()
+                                        ))),
+                                        cx.listener(|this, _, window, cx| {
+                                            this.open_playground(window, cx);
+                                        }),
+                                    )),
                             )
                             .child(
                                 div().w(px(SIDE_COL_W)).flex_none().flex().child(
@@ -5028,12 +5259,20 @@ impl LaralahApp {
                                         "Connect to Server",
                                         "Run code on Forge or SSH servers",
                                         crate::keymap::hint("ssh_connections"),
+                                        None,
                                         cx.listener(|this, _, window, cx| {
                                             this.open_ssh_modal(window, cx);
                                         }),
                                     ),
                                 ),
                             ),
+                    )
+                    .when_some(
+                        match &self.playground_status {
+                            PlaygroundStatus::Failed(msg) => Some(msg.clone()),
+                            _ => None,
+                        },
+                        |el, msg| el.child(self.render_playground_error(msg, cx)),
                     )
                     // 3. Recent workspaces + SSH connections
                     .child(
@@ -13258,6 +13497,7 @@ impl Render for LaralahApp {
             )
             .on_action(cx.listener(Self::on_quit))
             .on_action(cx.listener(Self::on_open_directory))
+            .on_action(cx.listener(Self::on_open_playground))
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_ai_sidebar))
             .on_action(cx.listener(Self::on_submit_ai_prompt))
@@ -13603,6 +13843,7 @@ fn landing_primary_tile(
     title: &str,
     subtitle: &str,
     shortcut: &str,
+    tooltip: Option<SharedString>,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
     div()
@@ -13622,6 +13863,9 @@ fn landing_primary_tile(
         .flex_row()
         .items_center()
         .gap_3p5()
+        .when_some(tooltip, |el, tip| {
+            el.tooltip(move |_, cx| TextTooltip::view(tip.clone(), cx))
+        })
         .on_click(on_click)
         .child(
             div()
@@ -13645,23 +13889,38 @@ fn landing_primary_tile(
                 .min_w(px(0.0))
                 .flex()
                 .flex_col()
-                .gap_0p5()
+                .gap_1()
+                // Title and shortcut share the top line so the subtitle gets the
+                // tile's full text width below them.
                 .child(
                     div()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(rgb(0x0f172a))
-                        .child(title.to_string()),
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .truncate()
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(rgb(0x0f172a))
+                                .child(title.to_string()),
+                        )
+                        .when(!shortcut.is_empty(), |el| {
+                            el.child(div().flex_none().child(landing_keycap(shortcut)))
+                        }),
                 )
                 .child(
                     div()
-                        .truncate()
                         .text_xs()
+                        .line_height(px(16.0))
+                        .line_clamp(2)
                         .text_color(rgb(0x64748b))
                         .child(subtitle.to_string()),
                 ),
         )
-        .child(div().flex_none().child(landing_keycap(shortcut)))
         .into_any_element()
 }
 
@@ -13811,6 +14070,13 @@ fn landing_shortcut_chip(keys: &str, label: &str) -> gpui::AnyElement {
                 .child(label.to_string()),
         )
         .into_any_element()
+}
+
+fn playground_laravel_version() -> Option<String> {
+    crate::playground::is_playground_ready().then(|| {
+        let dir = crate::playground::playground_dir();
+        detect_local_laravel_version(&dir.to_string_lossy())
+    })
 }
 
 fn abbreviate_home_path(path: &str) -> String {

@@ -19,6 +19,7 @@ It is a native app written in Rust (with [GPUI](https://www.gpui.rs/)). It runs 
 ## Features
 
 - **Run code fast** – write PHP and run it in your Laravel project.
+- **Playground** (Cmd+Shift+O) – no project? Laralah sets up a fresh Laravel app (latest stable, SQLite database) in `~/.laralah/playground` so you can try code right away. Needs [Composer](https://getcomposer.org) the first time. Use **Reset Playground Database** in the command palette for a clean database.
 - **Three ways to see results**
   - **Detail** (Cmd+1) – see each value step by step.
   - **Table** (Cmd+2) – see lists and collections as a table.
@@ -37,7 +38,7 @@ It is a native app written in Rust (with [GPUI](https://www.gpui.rs/)). It runs 
 ## Requirements
 
 - PHP on your computer (or on the server / container you connect to)
-- A Laravel project
+- A Laravel project, or [Composer](https://getcomposer.org) to use the Playground
 
 ## Install
 
@@ -68,6 +69,7 @@ On Linux and Windows, use **Ctrl** where this page says **Cmd**. Every command i
 | Cmd+R | Run code |
 | Cmd+Shift+F | Format code |
 | Cmd+O | Open a project folder |
+| Cmd+Shift+O | Open the Playground |
 | Cmd+T | New tab |
 | Cmd+W | Close tab |
 | Cmd+Shift+] / Cmd+Shift+[ | Next / previous tab |

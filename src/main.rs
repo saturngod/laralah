@@ -17,6 +17,7 @@ mod mail_webview;
 mod models;
 mod object_graph;
 mod paths;
+mod playground;
 mod runner;
 mod selectable;
 mod shortcut;

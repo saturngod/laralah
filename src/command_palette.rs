@@ -10,6 +10,8 @@ pub enum PaletteItemKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaletteAction {
     OpenDirectoryDialog,
+    OpenPlayground,
+    ResetPlaygroundDatabase,
     ShowLandingPage,
     OpenSettings,
     OpenAiSettings,
@@ -158,6 +160,22 @@ pub fn filter_palette_entries(
             subtitle: "Choose a Laravel folder from macOS Finder".to_string(),
             shortcut: crate::keymap::hint("open_folder"),
             action: PaletteAction::OpenDirectoryDialog,
+        },
+        PaletteEntry {
+            kind: PaletteItemKind::Project,
+            prefix_tag: "/",
+            title: "Open Playground".to_string(),
+            subtitle: "Latest Laravel with SQLite for trying code (created on first use)".to_string(),
+            shortcut: crate::keymap::hint("open_playground"),
+            action: PaletteAction::OpenPlayground,
+        },
+        PaletteEntry {
+            kind: PaletteItemKind::Command,
+            prefix_tag: ">",
+            title: "Reset Playground Database".to_string(),
+            subtitle: "Drop every table in the playground's SQLite database and migrate again".to_string(),
+            shortcut: "",
+            action: PaletteAction::ResetPlaygroundDatabase,
         },
         PaletteEntry {
             kind: PaletteItemKind::Command,
