@@ -154,30 +154,19 @@ impl EditCommand {
         }
     }
 
-    #[cfg(target_os = "macos")]
-    fn shortcut(self) -> &'static str {
-        match self {
-            Self::Undo => "⌘Z",
-            Self::Redo => "⇧⌘Z",
-            Self::Cut => "⌘X",
-            Self::Copy => "⌘C",
-            Self::Paste => "⌘V",
-            Self::SelectAll => "⌘A",
-            Self::FormatCode => crate::keymap::hint("format_code"),
-        }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn shortcut(self) -> &'static str {
-        match self {
-            Self::Undo => "Ctrl+Z",
-            Self::Redo => "Ctrl+Y",
-            Self::Cut => "Ctrl+X",
-            Self::Copy => "Ctrl+C",
-            Self::Paste => "Ctrl+V",
-            Self::SelectAll => "Ctrl+A",
-            Self::FormatCode => crate::keymap::hint("format_code"),
-        }
+    /// Label of the key bound in [`bind_editor_keys`] (e.g. `⌘Z` / `Ctrl+Z`).
+    fn shortcut(self) -> String {
+        let keys = match self {
+            Self::Undo => "secondary-z",
+            Self::Redo if cfg!(target_os = "macos") => "secondary-shift-z",
+            Self::Redo => "secondary-y",
+            Self::Cut => "secondary-x",
+            Self::Copy => "secondary-c",
+            Self::Paste => "secondary-v",
+            Self::SelectAll => "secondary-a",
+            Self::FormatCode => return crate::keymap::hint("format_code").to_string(),
+        };
+        crate::keymap::display(keys)
     }
 }
 

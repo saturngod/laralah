@@ -2321,6 +2321,14 @@ impl LaralahApp {
                 });
                 cx.notify();
             }
+            Err(crate::keymap::RecordError::NeedsModifierOrEnter) => {
+                self.shortcut_record_error = Some(if cfg!(target_os = "macos") {
+                    "Use ↩ or add ⌘, ⌃ or ⌥ — other single keys are for typing.".to_string()
+                } else {
+                    "Use Enter or add Ctrl or Alt — other single keys are for typing.".to_string()
+                });
+                cx.notify();
+            }
         }
     }
 
@@ -8569,11 +8577,15 @@ impl LaralahApp {
                 let recording = self.recording_shortcut == Some(id);
                 let keys = crate::keymap::effective_keys(spec, overrides);
                 let customized = crate::keymap::is_customized(spec, overrides);
-                let conflicts: Vec<&'static str> = keys
+                let mut conflicts: Vec<String> = Vec::new();
+                for label in keys
                     .iter()
-                    .flat_map(|k| crate::keymap::conflicts(spec, k, overrides))
-                    .map(|other| other.label)
-                    .collect();
+                    .flat_map(|k| crate::keymap::conflict_labels(spec, k, overrides))
+                {
+                    if !conflicts.contains(&label) {
+                        conflicts.push(label);
+                    }
+                }
 
                 let keycaps: Vec<gpui::AnyElement> = if recording {
                     vec![
@@ -13825,9 +13837,23 @@ fn extract_short_php_badge(detected_line: &str) -> String {
     "PHP CLI".to_string()
 }
 
+/// Same placement rule as the settings file: a file in the working directory during
+/// development (or when one already exists there), otherwise the user's home folder.
+/// A bundled app starts with a read-only working directory (`/` on macOS), so writing
+/// next to it silently failed and the list was lost on every launch.
 fn recent_folders_file_path() -> PathBuf {
+    const NAME: &str = ".laralah_recent.json";
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    cwd.join(".laralah_recent.json")
+    let local = cwd.join(NAME);
+    if local.exists() || cwd.join("Cargo.toml").exists() {
+        return local;
+    }
+    if let Some(home) = crate::paths::home_dir()
+        && home.is_dir()
+    {
+        return home.join(NAME);
+    }
+    local
 }
 
 fn load_recent_folders() -> Vec<String> {

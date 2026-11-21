@@ -32,8 +32,20 @@ pub struct ShortcutSpec {
     pub label: &'static str,
     pub defaults: &'static [&'static str],
     pub targets: &'static [ShortcutTarget],
-    /// Allows a key without Cmd/Ctrl/Alt (only safe outside text inputs).
-    pub allow_bare: bool,
+    /// Which keys may be used without Cmd/Ctrl/Alt.
+    pub bare: BareKeys,
+}
+
+/// Keys a shortcut may use without a Cmd/Ctrl/Alt modifier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BareKeys {
+    /// None besides function keys: a bare key would swallow normal typing.
+    None,
+    /// Enter only (with or without Shift): for text inputs, where letters and
+    /// navigation keys must keep typing and moving the caret.
+    Enter,
+    /// Any key: only for contexts that hold no text input.
+    Any,
 }
 
 impl std::fmt::Debug for ShortcutSpec {
@@ -45,6 +57,12 @@ impl std::fmt::Debug for ShortcutSpec {
 impl ShortcutSpec {
     fn is_global(&self) -> bool {
         self.targets.iter().any(|t| t.context.is_none())
+    }
+
+    /// True when some target can fire while a text input has focus: anything but
+    /// the object graph, which holds none.
+    fn reaches_text_input(&self) -> bool {
+        self.targets.iter().any(|t| t.context != Some("ObjectGraph"))
     }
 
     fn shares_context_with(&self, other: &ShortcutSpec) -> bool {
@@ -68,7 +86,7 @@ macro_rules! target {
 
 macro_rules! spec {
     ($id:expr, $label:expr, [$($key:expr),* $(,)?], [$($t:expr),+ $(,)?]) => {
-        ShortcutSpec { id: $id, label: $label, defaults: &[$($key),*], targets: &[$($t),+], allow_bare: false }
+        ShortcutSpec { id: $id, label: $label, defaults: &[$($key),*], targets: &[$($t),+], bare: BareKeys::None }
     };
     // Different defaults on macOS and on Windows/Linux, where the OS or input
     // methods claim some keys first.
@@ -78,11 +96,11 @@ macro_rules! spec {
             label: $label,
             defaults: if cfg!(target_os = "macos") { &[$($mk),*] } else { &[$($ok),*] },
             targets: &[$($t),+],
-            allow_bare: false,
+            bare: BareKeys::None,
         }
     };
-    ($id:expr, $label:expr, [$($key:expr),* $(,)?], [$($t:expr),+ $(,)?], bare) => {
-        ShortcutSpec { id: $id, label: $label, defaults: &[$($key),*], targets: &[$($t),+], allow_bare: true }
+    ($id:expr, $label:expr, [$($key:expr),* $(,)?], [$($t:expr),+ $(,)?], bare $bare:ident) => {
+        ShortcutSpec { id: $id, label: $label, defaults: &[$($key),*], targets: &[$($t),+], bare: BareKeys::$bare }
     };
 }
 
@@ -164,28 +182,28 @@ pub fn shortcut_specs() -> &'static [ShortcutSpec] {
             "Send AI prompt",
             ["enter", "secondary-enter"],
             [target!(SubmitAiPrompt, "AiComposer")],
-            bare
+            bare Enter
         ),
         spec!(
             "graph_zoom_in",
             "Zoom object graph in",
             ["secondary-=", "secondary-+", "="],
             [target!(GraphZoomIn, "ObjectGraph")],
-            bare
+            bare Any
         ),
         spec!(
             "graph_zoom_out",
             "Zoom object graph out",
             ["secondary--", "-"],
             [target!(GraphZoomOut, "ObjectGraph")],
-            bare
+            bare Any
         ),
         spec!(
             "graph_fit",
             "Reset object graph zoom",
             ["secondary-0", "0"],
             [target!(GraphFitView, "ObjectGraph")],
-            bare
+            bare Any
         ),
         spec!("quit", "Quit Laralah", ["secondary-q"], [target!(QuitApp)]),
     ];
@@ -225,21 +243,92 @@ pub fn is_customized(spec: &ShortcutSpec, overrides: &HashMap<String, Vec<String
 }
 
 /// Other shortcuts that already use `keystroke` in an overlapping key context.
+/// An unparsable `keystroke` is never bound, so it conflicts with nothing.
 pub fn conflicts(
     spec: &ShortcutSpec,
     keystroke: &str,
     overrides: &HashMap<String, Vec<String>>,
 ) -> Vec<&'static ShortcutSpec> {
-    let wanted = Keystroke::parse(keystroke).ok();
+    let Ok(wanted) = Keystroke::parse(keystroke) else {
+        return Vec::new();
+    };
     shortcut_specs()
         .iter()
         .filter(|other| other.id != spec.id && spec.shares_context_with(other))
         .filter(|other| {
             effective_keys(other, overrides)
                 .iter()
-                .any(|k| Keystroke::parse(k).ok() == wanted)
+                .any(|k| Keystroke::parse(k).is_ok_and(|ks| ks == wanted))
         })
         .collect()
+}
+
+/// Fixed text-editing bindings from `editor::bind_editor_keys` (label, keys).
+/// Inside a text input they take precedence over a customizable shortcut on
+/// the same keys, because their key context is more specific.
+fn fixed_text_bindings() -> &'static [(&'static str, &'static str)] {
+    const COMMON: &[(&str, &str)] = &[
+        ("Select all", "secondary-a"),
+        ("Copy", "secondary-c"),
+        ("Cut", "secondary-x"),
+        ("Paste", "secondary-v"),
+        ("Undo", "secondary-z"),
+        ("Redo", "secondary-shift-z"),
+        ("Redo", "secondary-y"),
+    ];
+    #[cfg(target_os = "macos")]
+    const PLATFORM: &[(&str, &str)] = &[
+        ("Delete to line start", "cmd-backspace"),
+        ("Line start", "cmd-left"),
+        ("Line end", "cmd-right"),
+        ("Document start", "cmd-up"),
+        ("Document end", "cmd-down"),
+        ("Select to line start", "cmd-shift-left"),
+        ("Select to line end", "cmd-shift-right"),
+        ("Select to document start", "cmd-shift-up"),
+        ("Select to document end", "cmd-shift-down"),
+    ];
+    #[cfg(not(target_os = "macos"))]
+    const PLATFORM: &[(&str, &str)] = &[
+        ("Delete word", "ctrl-backspace"),
+        ("Word left", "ctrl-left"),
+        ("Word right", "ctrl-right"),
+        ("Select word left", "ctrl-shift-left"),
+        ("Select word right", "ctrl-shift-right"),
+        ("Document start", "ctrl-home"),
+        ("Document end", "ctrl-end"),
+        ("Select to document start", "ctrl-shift-home"),
+        ("Select to document end", "ctrl-shift-end"),
+        ("Cut", "shift-delete"),
+        ("Copy", "ctrl-insert"),
+        ("Paste", "shift-insert"),
+    ];
+    static ALL: OnceLock<Vec<(&'static str, &'static str)>> = OnceLock::new();
+    ALL.get_or_init(|| COMMON.iter().chain(PLATFORM).copied().collect())
+}
+
+/// Everything `keystroke` would clash with for `spec`, as labels for the UI:
+/// other customizable shortcuts, then fixed text-editing keys.
+pub fn conflict_labels(
+    spec: &ShortcutSpec,
+    keystroke: &str,
+    overrides: &HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    let mut labels: Vec<String> = conflicts(spec, keystroke, overrides)
+        .into_iter()
+        .map(|other| other.label.to_string())
+        .collect();
+    if spec.reaches_text_input()
+        && let Ok(wanted) = Keystroke::parse(keystroke)
+    {
+        labels.extend(
+            fixed_text_bindings()
+                .iter()
+                .filter(|(_, keys)| Keystroke::parse(keys).is_ok_and(|ks| ks == wanted))
+                .map(|(label, _)| format!("{label} in text fields")),
+        );
+    }
+    labels
 }
 
 /// Snapshot of the overrides used to build the current keymap, for UI hints.
@@ -425,6 +514,8 @@ pub enum RecordError {
     ModifierOnly,
     /// A bare key would swallow normal typing.
     NeedsModifier,
+    /// Only Enter may be used without a modifier here.
+    NeedsModifierOrEnter,
 }
 
 /// Turns a pressed key into a portable keystroke string for `spec`.
@@ -439,8 +530,13 @@ pub fn record(spec: &ShortcutSpec, ks: &Keystroke) -> Result<String, RecordError
     let is_function_key = key.len() > 1
         && key.starts_with('f')
         && key[1..].chars().all(|c| c.is_ascii_digit());
-    if !spec.allow_bare && !(m.control || m.alt || m.platform || is_function_key) {
-        return Err(RecordError::NeedsModifier);
+    if !(m.control || m.alt || m.platform || is_function_key) {
+        match spec.bare {
+            BareKeys::Any => {}
+            BareKeys::Enter if key == "enter" => {}
+            BareKeys::Enter => return Err(RecordError::NeedsModifierOrEnter),
+            BareKeys::None => return Err(RecordError::NeedsModifier),
+        }
     }
 
     // `secondary` is Cmd on macOS and Ctrl elsewhere.
@@ -512,6 +608,13 @@ mod tests {
 
         let graph = spec_by_id("graph_zoom_in").unwrap();
         assert_eq!(record(graph, &bare).unwrap(), "e");
+
+        // The AI composer is a text input: bare letters must keep typing.
+        let ai = spec_by_id("submit_ai_prompt").unwrap();
+        assert_eq!(record(ai, &bare), Err(RecordError::NeedsModifierOrEnter));
+        assert_eq!(record(ai, &Keystroke::parse("space").unwrap()), Err(RecordError::NeedsModifierOrEnter));
+        assert_eq!(record(ai, &Keystroke::parse("enter").unwrap()).unwrap(), "enter");
+        assert_eq!(record(ai, &Keystroke::parse("shift-enter").unwrap()).unwrap(), "shift-enter");
     }
 
     #[test]
@@ -527,6 +630,17 @@ mod tests {
         // with the global ones.
         let fit = spec_by_id("graph_fit").unwrap();
         assert!(conflicts(fit, "secondary-r", &overrides).iter().any(|s| s.id == "run_code"));
+
+        // Fixed editor keys win inside text inputs, so they're reported too; the
+        // object graph has no text input, so it may reuse them.
+        assert_eq!(conflict_labels(run, "secondary-c", &overrides), ["Copy in text fields"]);
+        assert!(conflict_labels(fit, "secondary-c", &overrides).is_empty());
+
+        // Unparsable keys (e.g. from a hand-edited settings file) are never bound.
+        let mut bad = HashMap::new();
+        bad.insert("toggle_logs".to_string(), vec!["x-y".to_string()]);
+        assert!(Keystroke::parse("x-y").is_err());
+        assert!(conflicts(run, "x-y", &bad).is_empty());
     }
 
     #[test]
@@ -543,12 +657,17 @@ mod tests {
             assert_eq!(next.defaults[0], "ctrl-tab");
             assert_eq!(complete.defaults, ["ctrl-space", "alt-/"]);
         }
-        // Each platform's set has no clashes within shared contexts.
+        // Each platform's set has no clashes within shared contexts, nor with
+        // the fixed text-editing keys.
         let overrides = HashMap::new();
         for spec in shortcut_specs() {
             for key in spec.defaults {
-                assert!(conflicts(spec, key, &overrides).is_empty(), "{} {key} clashes", spec.id);
+                let hits = conflict_labels(spec, key, &overrides);
+                assert!(hits.is_empty(), "{} {key} clashes with {hits:?}", spec.id);
             }
+        }
+        for (_, key) in fixed_text_bindings() {
+            assert!(Keystroke::parse(key).is_ok(), "bad fixed binding {key}");
         }
     }
 

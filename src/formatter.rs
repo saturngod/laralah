@@ -5,7 +5,7 @@
 //! Pint — or when the buffer doesn't parse yet — a built-in, syntax-tolerant
 //! re-indenter fixes indentation and whitespace instead.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -91,10 +91,15 @@ fn run_pint(
     // Composer's bin proxies and the Pint phar are PHP scripts: run them with the
     // configured PHP so a GUI app's minimal PATH doesn't matter, and silence the
     // deprecation notices older Pint builds print on newer PHP.
-    let is_php_script = std::fs::read(pint)
-        .ok()
+    // Only the first bytes matter, and the Pint phar is several MB.
+    let is_php_script = std::fs::File::open(pint)
+        .and_then(|f| {
+            let mut head = Vec::with_capacity(256);
+            std::io::Read::take(f, 256).read_to_end(&mut head)?;
+            Ok(head)
+        })
         .map(|bytes| {
-            let head = String::from_utf8_lossy(&bytes[..bytes.len().min(256)]).to_string();
+            let head = String::from_utf8_lossy(&bytes);
             head.starts_with("<?php") || head.lines().next().is_some_and(|l| l.contains("php"))
         })
         .unwrap_or(false);
@@ -367,30 +372,54 @@ fn line_has_close_tag(rest: &[char]) -> bool {
     rest.windows(2).any(|w| w == ['?', '>'])
 }
 
-/// Maps a byte offset in `old` to the matching spot in `new`, where the two differ
-/// only in formatting: the caret stays after the same non-whitespace character.
+/// Maps a caret offset in `old` to the same spot in its reformatted `new`.
+///
+/// Whitespace is ignored. Pint also rewrites tokens (quotes, `array()` → `[]`,
+/// trailing commas, import order), so the caret is placed by counting
+/// non-whitespace characters from the start when it sits before the first
+/// change, and from the end when it sits after the last one; only a caret
+/// inside a changed stretch falls back to the count from the start.
 pub fn map_offset(old: &str, new: &str, offset: usize) -> usize {
     let mut offset = offset.min(old.len());
     while !old.is_char_boundary(offset) {
         offset -= 1;
     }
-    let target = old[..offset]
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .count();
-    if target == 0 {
+    let old_ns: Vec<char> = old.chars().filter(|c| !c.is_whitespace()).collect();
+    let new_ns: Vec<(usize, char)> = new
+        .char_indices()
+        .filter(|(_, c)| !c.is_whitespace())
+        .collect();
+    // Non-whitespace characters before the caret.
+    let before = old[..offset].chars().filter(|c| !c.is_whitespace()).count();
+    if before == 0 {
         return 0;
     }
-    let mut seen = 0;
-    for (idx, ch) in new.char_indices() {
-        if !ch.is_whitespace() {
-            seen += 1;
-            if seen == target {
-                return idx + ch.len_utf8();
-            }
-        }
+
+    let common_prefix = old_ns
+        .iter()
+        .zip(&new_ns)
+        .take_while(|(a, (_, b))| *a == b)
+        .count();
+    let max_suffix = old_ns.len().min(new_ns.len()) - common_prefix;
+    let common_suffix = old_ns
+        .iter()
+        .rev()
+        .zip(new_ns.iter().rev())
+        .take(max_suffix)
+        .take_while(|(a, (_, b))| *a == b)
+        .count();
+
+    // How many of `new`'s non-whitespace characters go before the caret.
+    let after = old_ns.len() - before;
+    let keep = if before > common_prefix && after <= common_suffix {
+        new_ns.len() - after
+    } else {
+        before.min(new_ns.len())
+    };
+    match keep.checked_sub(1).map(|i| new_ns[i]) {
+        Some((pos, ch)) => pos + ch.len_utf8(),
+        None => 0,
     }
-    new.len()
 }
 
 #[cfg(test)]
@@ -443,6 +472,15 @@ mod tests {
         assert_eq!(&new[..map_offset(old, new, caret)], "if (1) {\n    foo");
         assert_eq!(map_offset(old, new, 0), 0);
         assert_eq!(map_offset(old, new, old.len()), new.len());
+
+        // Pint rewrote code before the caret: count from the end instead.
+        let old = "$a = array(1, 2);\n$b = \"x\";\nfoo($b);\n";
+        let new = "$a = [1, 2];\n$b = 'x';\nfoo($b);\n";
+        let caret = old.find("foo(").unwrap() + 3;
+        assert_eq!(&new[..map_offset(old, new, caret)], "$a = [1, 2];\n$b = 'x';\nfoo");
+        // ...and a caret before the first change still counts from the start.
+        assert_eq!(&new[..map_offset(old, new, 2)], "$a");
+        assert_eq!(map_offset("x", "", 1), 0);
     }
 
     /// Runs against a real Pint install when `LARALAH_TEST_PINT_PROJECT` points at a

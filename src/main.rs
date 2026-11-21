@@ -35,7 +35,7 @@ use gpui::{
 
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)]
-fn configure_macos_app(cx: &mut App) {
+fn configure_macos_app() {
     macos_window_cursor::install_window_edge_cursor_guard();
     macos_window_cursor::disable_titlebar_double_click_zoom();
 
@@ -66,9 +66,8 @@ fn configure_macos_app(cx: &mut App) {
         }
     }
 
-    // The menu bar itself is installed with the keymap (see `keymap::apply`), so
-    // its shortcut labels follow the user's custom bindings.
-    crate::app_menu::install_native(cx);
+    // The menu bar is installed by `keymap::apply` (run when the app view is
+    // created), so its shortcut labels follow the user's custom bindings.
 }
 
 fn main() {
@@ -80,7 +79,7 @@ fn main() {
         .with_assets(EmbeddedAssets)
         .run(|cx: &mut App| {
             #[cfg(target_os = "macos")]
-            configure_macos_app(cx);
+            configure_macos_app();
 
             let bounds = Bounds::centered(None, size(px(1220.0), px(760.0)), cx);
             let window = cx

@@ -8,7 +8,7 @@
 
 use crate::theme::{rgb, rgba};
 use gpui::{
-    actions, anchored, deferred, div, fill, prelude::*, px, App, Bounds, ClipboardItem,
+    anchored, deferred, div, fill, prelude::*, px, App, Bounds, ClipboardItem,
     CursorStyle, DispatchPhase, Element, ElementId, FocusHandle, GlobalElementId, HighlightStyle,
     Hitbox, HitboxBehavior, InspectorElementId, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, StyledText, TextLayout, Window,
@@ -17,7 +17,9 @@ use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 
-actions!(selectable_text, [CopySelection, SelectAllText]);
+// The editor's own Copy / Select All actions, so the Edit menu (macOS menu bar
+// and the in-window menu) finds a handler while an output pane has focus.
+use crate::editor::{Copy as CopySelection, SelectAll as SelectAllText};
 
 const KEY_CONTEXT: &str = "SelectableText";
 
@@ -270,7 +272,7 @@ impl TextSelection {
     pub fn render_context_menu(&self) -> Option<gpui::AnyElement> {
         let position = self.0.borrow().menu?;
         let has_sel = !self.text_in(true).is_empty();
-        let item = |id: &'static str, label: &'static str, shortcut: &'static str, enabled: bool, sel: TextSelection, run: fn(&TextSelection, &mut App)| {
+        let item = |id: &'static str, label: &'static str, shortcut: String, enabled: bool, sel: TextSelection, run: fn(&TextSelection, &mut App)| {
             div()
                 .id(id)
                 .h(px(26.0))
@@ -325,8 +327,8 @@ impl TextSelection {
                             })
                             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                            .child(item("selectable-menu-copy", "Copy", COPY_SHORTCUT, has_sel, self.clone(), |s, cx| s.copy(cx)))
-                            .child(item("selectable-menu-select-all", "Select All", SELECT_ALL_SHORTCUT, true, self.clone(), |s, _| s.select_all())),
+                            .child(item("selectable-menu-copy", "Copy", crate::keymap::display("secondary-c"), has_sel, self.clone(), |s, cx| s.copy(cx)))
+                            .child(item("selectable-menu-select-all", "Select All", crate::keymap::display("secondary-a"), true, self.clone(), |s, _| s.select_all())),
                     ),
             )
             .with_priority(1)
@@ -334,15 +336,6 @@ impl TextSelection {
         )
     }
 }
-
-#[cfg(target_os = "macos")]
-const COPY_SHORTCUT: &str = "⌘C";
-#[cfg(not(target_os = "macos"))]
-const COPY_SHORTCUT: &str = "Ctrl+C";
-#[cfg(target_os = "macos")]
-const SELECT_ALL_SHORTCUT: &str = "⌘A";
-#[cfg(not(target_os = "macos"))]
-const SELECT_ALL_SHORTCUT: &str = "Ctrl+A";
 
 /// Wires a container up as the host of `sel`'s blocks: focus, ⌘C / ⌘A,
 /// clearing the selection on clicks outside text, and the right-click menu.
